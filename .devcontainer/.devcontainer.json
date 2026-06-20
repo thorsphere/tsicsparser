@@ -1,0 +1,14 @@
+{
+  "name": "Go Dev Environment",
+  "customizations": {
+    "codespaces": {
+      "repositories": {
+        "thorsphere/tsicsparser": {
+          "permissions": {
+            "contents": "write"
+          }
+        }
+      }
+    }
+  }
+}
