@@ -13,7 +13,10 @@
     "vscode": {
       "extensions": [
         "golang.go"
-      ]
+      ],
+      "settings": {
+        "locale": "en"
+      }
     }
   }
 }
