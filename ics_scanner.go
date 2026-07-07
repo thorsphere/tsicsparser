@@ -1,15 +1,15 @@
 // Copyright (c) 2026 thorsphere.
 // All Rights Reserved. Use is governed with GNU Affero General Public License v3.0
 // that can be found in the LICENSE file.
-
 package tsicsparser
 
+// Import necessary packages for ICS parsing and error handling.
 import (
-	"bufio"
-	"io"
-	"strings"
+	"bufio"   // Import the bufio package for buffered I/O operations.
+	"io"      // Import the io package for I/O primitives.
+	"strings" // Import the strings package for string manipulation.
 
-	"github.com/thorsphere/tserr"
+	"github.com/thorsphere/tserr" // Import the tserr package for error handling.
 )
 
 // ICSScanner is a scanner that reads lines from an ICS file,

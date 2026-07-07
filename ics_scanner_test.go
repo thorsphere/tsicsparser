@@ -41,7 +41,7 @@ func TestICSScanner(t *testing.T) {
 		t.Fatal(tserr.Op(&tserr.OpArgs{Op: "Scan", Fn: fn, Err: err}))
 	}
 	// Evaluate the output against the golden file to ensure correctness.
-	if err := tsfio.EvalGoldenFile(&tsfio.Testcase{Name: "scanner_ics", Data: b.String()}); err != nil {
+	if err := tsfio.EvalGoldenFile(&tsfio.Testcase{Name: "scanner", Data: b.String()}); err != nil {
 		t.Fatal(err)
 	}
 }
