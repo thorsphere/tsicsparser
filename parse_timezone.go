@@ -335,7 +335,12 @@ func (tz Timezone) String() string {
 		return tbl.String()
 	}
 	// Add rows for each rule in the timezone
-	for _, rule := range tz.Rules {
+	for i, rule := range tz.Rules {
+		// Add a separator between rules for better readability
+		if i > 0 {
+			tbl.AddSeparator()
+		}
+		// Add rows for the rule's details
 		tbl.AddRow([]string{"Rule Type", rule.Type.String()})
 		tbl.AddRow([]string{"DTStart", rule.DTStart.Format(time.RFC3339)})
 		tbl.AddRow([]string{"TZOffsetFrom", fmt.Sprintf("%+d", rule.TZOffsetFrom)})

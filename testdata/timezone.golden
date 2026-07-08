@@ -9,6 +9,7 @@
   │  RRule Freq     │  YEARLY                │
   │  RRule ByMonth  │  3                     │
   │  RRule ByDay    │  2SU                   │
+  ├─────────────────┼────────────────────────┤
   │  Rule Type      │  STANDARD              │
   │  DTStart        │  2007-11-04T02:00:00Z  │
   │  TZOffsetFrom   │  -14400                │
