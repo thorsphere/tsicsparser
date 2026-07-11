@@ -12,8 +12,8 @@
   ├─────────────────┼────────────────────────┤
   │  Rule Type      │  STANDARD              │
   │  DTStart        │  2007-11-04T02:00:00Z  │
-  │  TZOffsetFrom   │  -14400                │
-  │  TZOffsetTo     │  -18000                │
+  │  TZOffsetFrom   │  +14400                │
+  │  TZOffsetTo     │  +18000                │
   │  TZName         │  EST                   │
   │  RRule Freq     │  YEARLY                │
   │  RRule ByMonth  │  11                    │

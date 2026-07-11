@@ -86,6 +86,9 @@ func parseTimezone(scanner *ICSScanner) (Timezone, error) {
 			// create a new TimezoneRule with Type set to Standard.
 			case "STANDARD":
 				currentRule = &TimezoneRule{Type: Standard}
+			// If the BEGIN is for any other value, return an error indicating unexpected BEGIN.
+			default:
+				return Timezone{}, tserr.InvalidFormat(fmt.Sprintf("unexpected BEGIN:%s inside VTIMEZONE", parts.Value))
 			}
 		// Handle the END of a timezone rule or the entire VTIMEZONE component.
 		case "END":
@@ -124,6 +127,10 @@ func parseTimezone(scanner *ICSScanner) (Timezone, error) {
 				// Return the parsed timezone and a nil error,
 				// indicating successful parsing of the VTIMEZONE component.
 				return tz, nil
+			// If the END is for any other value, return an error indicating unexpected END.
+			default:
+				return Timezone{}, tserr.InvalidFormat(
+					fmt.Sprintf("unexpected END:%s inside VTIMEZONE", parts.Value))
 			}
 		// Handle DTSTART for timezone transitions.
 		case "DTSTART":
@@ -309,12 +316,17 @@ func parseICSDateTime(s string) (time.Time, error) {
 	return t, nil
 }
 
+// String returns a string representation of the RuleType (either "STANDARD" or "DAYLIGHT").
 func (rt RuleType) String() string {
+	// Use a switch statement to return the string representation of the RuleType.
 	switch rt {
+	// If the RuleType is Standard, return "STANDARD".
 	case Standard:
 		return "STANDARD"
+	// If the RuleType is Daylight, return "DAYLIGHT".
 	case Daylight:
 		return "DAYLIGHT"
+	// If the RuleType is unknown, return "<unknown>".
 	default:
 		return "<unknown>"
 	}
