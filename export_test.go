@@ -4,4 +4,7 @@
 package tsicsparser
 
 // Export internal functions for external test package.
-var ParseTimezone = parseTimezone
+var (
+	ParseTimezone = parseTimezone
+	ParseProdId   = parseProdID
+)
