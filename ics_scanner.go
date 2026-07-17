@@ -144,8 +144,9 @@ func (s *ICSScanner) readLine() (string, bool) {
 	}
 	// If we haven't looked ahead, we read the next line from the scanner.
 	if s.scanner.Scan() {
-		// Clean the line to remove any trailing carriage returns and return it.
-		return cleanLine(s.scanner.Text()), true
+		// If we can read the next line, we return the cleaned and unescaped line
+		// and true to indicate success.
+		return unescapeText(cleanLine(s.scanner.Text())), true
 	}
 	// If we cannot read the next line, we check if there was an error during scanning.
 	if err := s.scanner.Err(); err != nil {
@@ -162,4 +163,19 @@ func cleanLine(line string) string {
 	// Remove trailing carriage returns (\r) from the end of the line,
 	// as they are not part of the actual content.
 	return strings.TrimRight(line, "\r")
+}
+
+// unescapeText removes RFC 5545 escape characters from text fields
+func unescapeText(input string) string {
+	// Define the spec-mandated escape mappings
+	replacer := strings.NewReplacer(
+		`\,`, ",",
+		`\;`, ";",
+		`\\`, `\`,
+		`\n`, "\n",
+		`\N`, "\n",
+	)
+	// Replace the escape sequences in the input string with their corresponding characters
+	// and return the unescaped text.
+	return replacer.Replace(input)
 }
