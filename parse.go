@@ -4,12 +4,30 @@
 package tsicsparser
 
 import (
-	"bufio"
 	"fmt"
 	"strings"
 
 	"github.com/thorsphere/tserr"
 )
+
+// Calendar represents a calendar with events.
+type Calendar struct {
+	ProdId   ProdId   // Prodid is the product identifier for the calendar.
+	Version  string   // Version is the version of the calendar format.
+	Calscale string   // Calscale is the calendar scale used (e.g., "GREGORIAN").
+	Method   string   // Method is the method used for the calendar (e.g., "PUBLISH").
+	Summary  string   // Summary is a brief description of the calendar.
+	Timezone Timezone // Timezone represents the timezone information for the calendar.
+	Events   []Event  // Events is a slice of Event structs representing the events in the calendar.
+}
+
+// Prodid represents the product identifier for the calendar.
+type ProdId struct {
+	Registered   bool   // Registered indicates whether the product identifier is registered.
+	Organisation string // Organization is the name of the organization associated with the product identifier.
+	Product      string // Product is the name of the product associated with the product identifier.
+	Language     string // Language is the ISO 639-1 language code associated with the product identifier.
+}
 
 // keyValue is a simple struct that holds a key-value pair.
 type keyValue struct {
@@ -17,30 +35,11 @@ type keyValue struct {
 	Value string // The value of the key-value pair.
 }
 
-// findCalDef searches for the "BEGIN:VCALENDAR" keyword in the input stream using the provided scanner.
-func findCalDef(scanner *bufio.Scanner) error {
-	// Search for the "BEGIN:VCALENDAR" keyword in the input stream.
-	keyword := "BEGIN:VCALENDAR"
-	// Scan through the input stream until we find the keyword or reach the end of the stream.
-	for scanner.Scan() {
-		// Read the current line from the scanner.
-		line := scanner.Text()
-		// Ignore empty lines.
-		if len(line) == 0 {
-			continue
-		}
-		// If the current line matches the keyword, we have found the calendar definition.
-		if line == keyword {
-			return nil
-		}
-	}
-	// If we reach here, it means we did not find the keyword in the input stream.
-	return tserr.NotFound(keyword)
-}
-
 func parseCalendar(scanner *ICSScanner) (*Calendar, error) {
 	// Create a new Calendar struct to hold the parsed calendar information.
 	var cal Calendar
+	// Initialize a flag to indicate whether we have started parsing the calendar.
+	calStarted := false
 	// Scan through the input stream to read the calendar header information.
 	for scanner.Scan() {
 		// Read the current line from the scanner.
@@ -55,8 +54,20 @@ func parseCalendar(scanner *ICSScanner) (*Calendar, error) {
 		if err != nil {
 			return nil, err
 		}
-		// Process the key-value pair (this is a simplified example, you might want
-		// to do more with the actual values).
+		// If we have not yet started parsing the calendar and
+		// the current line indicates the beginning of a calendar,
+		// set the calStarted flag to true and continue to the next line.
+		if !calStarted {
+			// Check if the current line indicates the beginning of a calendar.
+			if parts.Key == "BEGIN" && parts.Value == "VCALENDAR" {
+				// Set the calStarted flag to true to indicate that we have started parsing the calendar.
+				calStarted = true
+			}
+			// Continue to the next line in the input stream.
+			continue
+		}
+		// If we have started parsing the calendar, we need to handle the different keys
+		// in the calendar header.
 		switch parts.Key {
 		case "PRODID": // If the key is "PRODID", we need to parse the product identifier information.
 			// Call the parseProdID function to parse the PRODID field and set the corresponding
@@ -80,7 +91,7 @@ func parseCalendar(scanner *ICSScanner) (*Calendar, error) {
 			switch parts.Value {
 			case "VEVENT": // If the value is "VEVENT", we are starting a new event component.
 				// Call the parseEvent function to parse the event component and add it to the Calendar struct.
-				event, err := parseEvent(scanner)
+				event, err := parseEvent(scanner, cal.Timezone)
 				// If there is an error while parsing the event, return the error.
 				if err != nil {
 					return nil, err
@@ -114,11 +125,14 @@ func parseCalendar(scanner *ICSScanner) (*Calendar, error) {
 			continue // Ignore other keys.
 		}
 	}
+	// If we reach here and calStarted is false, it means we have reached the end of the input stream
+	// without finding the "BEGIN:VCALENDAR" keyword.
+	if !calStarted {
+		return nil, tserr.NotFound("BEGIN:VCALENDAR")
+	}
+	// If we reach here, it means we have reached the end of the input stream
+	// without finding the "END:VCALENDAR" keyword.
 	return nil, tserr.InvalidFormat("Unexpected end of input while parsing calendar")
-}
-
-func parseEvent(scanner *ICSScanner) (Event, error) {
-	return Event{}, nil
 }
 
 func parseProdID(value string) (ProdId, error) {
