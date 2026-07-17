@@ -60,6 +60,19 @@ func TestParseTimezone(t *testing.T) {
 	}
 }
 
+// TestTimezoneWithoutRules tests the Timezone struct with a TZID of "Test" and no rules.
+// It ensures that the Timezone struct correctly handles this scenario and produces the expected output.
+func TestTimezoneWithoutRules(t *testing.T) {
+	// Create a new Timezone struct with a TZID of "Test" and no rules.
+	tz := tsicsparser.Timezone{
+		TZID: "Test",
+	}
+	// Evaluate the parsed timezone against the golden file to ensure correctness.
+	if err := tsfio.EvalGoldenFile(&tsfio.Testcase{Name: "timezone-wr", Data: tz.String()}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestParseTimezoneErrors tests the parseTimezone function with various malformed ICS inputs
 // to ensure that it correctly identifies and reports parsing errors. Each test case is designed
 // to trigger a specific error condition in the parser.

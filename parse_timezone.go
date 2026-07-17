@@ -137,8 +137,9 @@ func parseTimezone(scanner *ICSScanner) (Timezone, error) {
 			// If the current rule is not nil, parse the DTSTART value and
 			// assign it to the current rule.
 			if currentRule != nil {
-				// Parse the DTSTART value and convert it to time.Time.
-				t, err := parseICSDateTime(parts.Value)
+				// Parse the DTSTART value and convert it to time.Time. The isUTC flag is not used
+				// because the DTSTART field is always in local time.
+				t, _, err := parseICSDateTime(parts.Value)
 				// If there is an error parsing the DTSTART value,
 				// return an error indicating the issue.
 				if err != nil {
@@ -302,18 +303,29 @@ func parseRRule(s string) (*RRule, error) {
 	return &rrule, nil
 }
 
-// parseICSDateTime parses an ICS datetime string in the form "20070311T020000"
-// into a time.Time (interpreted as a local time without timezone info).
-func parseICSDateTime(s string) (time.Time, error) {
+// parseICSDateTime parses an ICS datetime string in the form "20070311T020000" or "20070311T020000Z"
+// into a time.Time (interpreted as a local time without timezone info) and
+// a boolean flag indicating if the datetime is already UTC.
+func parseICSDateTime(s string) (time.Time, bool, error) {
+	// Initialize a layout string to hold the datetime layout
+	var layout string
+	// Check if the datetime is already UTC by checking if it ends with "Z"
+	isUTC := strings.HasSuffix(s, "Z")
+	// If the datetime is already UTC, use a different layout
+	if isUTC {
+		layout = "20060102T150405Z"
+	} else { // Otherwise, use the default layout
+		layout = "20060102T150405"
+	}
 	// Use the time.Parse function to parse the ICS datetime string using the specified layout.
-	t, err := time.Parse("20060102T150405", s)
-	// If there is an error during parsing, return a zero time.Time value and
+	t, err := time.Parse(layout, s)
+	// If there is an error during parsing, return a zero time.Time value, the isUTC flag, and
 	// an error indicating invalid format.
 	if err != nil {
-		return time.Time{}, tserr.InvalidFormat(fmt.Sprintf("invalid datetime format: %s", s))
+		return time.Time{}, false, tserr.InvalidFormat(fmt.Sprintf("invalid datetime format: %s", s))
 	}
-	// Return the parsed time.Time value and a nil error, indicating successful parsing.
-	return t, nil
+	// Return the parsed time.Time value, the isUTC flag, and a nil error, indicating successful parsing.
+	return t, isUTC, nil
 }
 
 // String returns a string representation of the RuleType (either "STANDARD" or "DAYLIGHT").
