@@ -5,9 +5,12 @@ package tsicsparser
 
 // Export internal functions for external test package.
 var (
-	ParseTimezone = parseTimezone
-	ParseProdId   = parseProdID
-	ParseWeekday  = parseWeekday
-	ParseByDay    = parseByDay
-	NthWeekday    = nthWeekday
+	ParseTimezone  = parseTimezone
+	ParseProdId    = parseProdID
+	ParseWeekday   = parseWeekday
+	ParseByDay     = parseByDay
+	NthWeekday     = nthWeekday
+	SplitKeyParams = splitKeyParams
+	TransitionTime = transitionTime
+	ConvertToUTC   = convertToUTC
 )

@@ -127,12 +127,13 @@ func convertToUTC(localTime time.Time, tzid string, tz Timezone) (time.Time, err
 	// Initialize pointers to Daylight and Standard rules.
 	var dr, sr *TimezoneRule
 	// Loop through the rules in the timezone to find Daylight and Standard rules.
-	for _, rule := range tz.Rules {
+	for i := range tz.Rules {
+		rule := &tz.Rules[i]
 		switch rule.Type {
 		case Daylight:
-			dr = &rule
+			dr = rule
 		case Standard:
-			sr = &rule
+			sr = rule
 		}
 	}
 	// If both Daylight and Standard rules do not exist, return an error.
@@ -164,21 +165,32 @@ func convertToUTC(localTime time.Time, tzid string, tz Timezone) (time.Time, err
 	// After a transition, that rule's TZOffsetTo is in effect.
 	var offset int
 	if daylight.Before(standard) {
-		// Northern Hemisphere: spring forward (daylight), fall back (standard).
-		// Before daylight transition or after standard transition → Standard.
-		// Between daylight and standard → Daylight.
-		if localTime.Before(daylight) || !localTime.Before(standard) {
+		// --- Northern Hemisphere ---
+		// Spring Forward (Standard -> Daylight) happens at 'daylight'
+		// Fall Back (Daylight -> Standard) happens at 'standard'
+		if localTime.Before(daylight) {
+			// Strictly before spring transition
+			offset = sr.TZOffsetTo
+		} else if !localTime.Before(standard) {
+			// At or after autumn transition
 			offset = sr.TZOffsetTo
 		} else {
+			// At or after spring transition, but before autumn transition
 			offset = dr.TZOffsetTo
 		}
 	} else {
-		// Southern Hemisphere: spring back (standard), fall forward (daylight).
-		// Before standard transition or after daylight transition → Daylight.
-		// Between standard and daylight → Standard.
-		if localTime.Before(standard) || !localTime.Before(daylight) {
+		// --- Southern Hemisphere ---
+		// Spring Back (Daylight -> Standard) happens at 'standard'
+		// Fall Forward (Standard -> Daylight) happens at 'daylight'
+
+		if localTime.Before(standard) {
+			// Strictly before autumn transition
+			offset = dr.TZOffsetTo
+		} else if !localTime.Before(daylight) {
+			// At or after spring transition
 			offset = dr.TZOffsetTo
 		} else {
+			// At or after autumn transition, but before spring transition
 			offset = sr.TZOffsetTo
 		}
 	}
@@ -195,16 +207,19 @@ func transitionTime(rule TimezoneRule, year int) (time.Time, error) {
 	if rule.RRule == nil {
 		return rule.DTStart, nil
 	}
-
 	// Determine the month from the RRULE's ByMonth field.
 	month := time.Month(rule.RRule.ByMonth)
+	// If the RRULE's BYMONTH is missing (0), fall back to the month from DTSTART.
+	// This handles legacy or malformed rules where BYMONTH is absent.
+	if month == 0 {
+		month = rule.DTStart.Month()
+	}
 	// Compute the day-of-month for the Nth occurrence of the weekday in that month.
 	day, err := nthWeekday(year, month, rule.RRule.ByDay)
-
+	// If the Nth occurrence is out of bounds, return an error.
 	if err != nil {
 		return time.Time{}, err
 	}
-
 	// Construct the transition datetime using the time-of-day from DTStart.
 	return time.Date(year, month, day,
 		rule.DTStart.Hour(), rule.DTStart.Minute(), rule.DTStart.Second(), 0, time.UTC), nil
@@ -213,9 +228,8 @@ func transitionTime(rule TimezoneRule, year int) (time.Time, error) {
 // nthWeekday returns the day-of-month for the Nth occurrence of a weekday
 // in the given month and year. The byDay string is in RRULE BYDAY format,
 // e.g., "2SU" (2nd Sunday), "-1SU" (last Sunday), "1FR" (1st Friday).
-// If the BYDAY value is only two characters (e.g., "SU"), there is no
-// ordinal prefix and the function returns 0 for ordinal (treating the
-// Nth occurrence as the first, matching RFC 5545 semantics).
+// If the BYDAY value has no ordinal prefix (e.g., "SU"), it returns an error
+// because weekly recurrence is invalid within VTIMEZONE definitions.
 func nthWeekday(year int, month time.Month, byDay string) (int, error) {
 	// Parse the ordinal and weekday abbreviation from the BYDAY value.
 	ordinal, wd, err := parseByDay(byDay)
@@ -223,6 +237,7 @@ func nthWeekday(year int, month time.Month, byDay string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+
 	// Positive ordinal: count forward from the start of the month.
 	if ordinal > 0 {
 		// Get the first day of the month and its weekday.
@@ -230,14 +245,21 @@ func nthWeekday(year int, month time.Month, byDay string) (int, error) {
 		firstWeekday := first.Weekday()
 		// Calculate the offset from the 1st to the first occurrence of the target weekday.
 		offset := (int(wd) - int(firstWeekday) + 7) % 7
-		// Return the day-of-month for the Nth occurrence.
-		return 1 + offset + (ordinal-1)*7, nil
+		// Calculate the day-of-month for the Nth occurrence.
+		targetDay := 1 + offset + (ordinal-1)*7
+		// If the target day is outside the month, return an error.
+		if time.Date(year, month, targetDay, 0, 0, 0, 0, time.UTC).Month() != month {
+			return 0, tserr.InvalidFormat(fmt.Sprintf("occurrence %d of %s out of bounds for month %s", ordinal, byDay, month))
+		}
+		return targetDay, nil
 	}
+
 	// Negative ordinal: count backward from the end of the month.
 	if ordinal < 0 {
 		// Get the last day of the month and its weekday.
-		lastDay := time.Date(year, month+1, 0, 0, 0, 0, 0, time.UTC).Day()
-		lastWeekday := time.Date(year, month, lastDay, 0, 0, 0, 0, time.UTC).Weekday()
+		last := time.Date(year, month+1, 0, 0, 0, 0, 0, time.UTC)
+		lastDay := last.Day()
+		lastWeekday := last.Weekday()
 
 		// Calculate the offset from the last day back to the last occurrence of the target weekday.
 		backOffset := (int(lastWeekday) - int(wd) + 7) % 7
@@ -245,16 +267,29 @@ func nthWeekday(year int, month time.Month, byDay string) (int, error) {
 
 		// Move back by (|ordinal| - 1) weeks. Since ordinal is negative, (ordinal+1)*7
 		// gives the correct offset (e.g., -1 → 0 weeks back, -2 → -7 days back).
-		return lastOccurrence + (ordinal+1)*7, nil
+		targetDay := lastOccurrence + (ordinal+1)*7
+		// If the target day is outside the month, return an error.
+		if targetDay < 1 {
+			return 0, tserr.InvalidFormat(fmt.Sprintf("negative occurrence %d of %s out of bounds for month %s", ordinal, byDay, month))
+		}
+		return targetDay, nil
 	}
-	// If the ordinal is not positive or negative, return an error.
-	return 0, tserr.InvalidFormat(fmt.Sprintf("invalid ordinal: %d", ordinal))
+	// If ordinal is 0, no modifier was provided (e.g., "SU").
+	// This means "every Sunday", which is invalid/unsupported inside a VTIMEZONE block.
+	return 0, tserr.InvalidFormat(fmt.Sprintf("unsupported weekday rule without ordinal prefix inside VTIMEZONE: %s", byDay))
 }
 
 // parseByDay parses an RRULE BYDAY value like "2SU" or "-1SU" into
 // an ordinal (positive or negative) and a time.Weekday.
-// If no ordinal is present (e.g., "SU"), it defaults to 1.
+// If no ordinal is present (e.g., "SU"), it returns 0 for the ordinal,
+// which will be rejected as an error by the caller inside VTIMEZONE context.
 func parseByDay(byDay string) (int, time.Weekday, error) {
+	// Safeguard against out-of-bounds access: Check whether the string is long enough.
+	// Since a day of the week always consists of at least 2 characters (e.g., "SU"),
+	// anything shorter than that is definitely invalid.
+	if len(byDay) < 2 {
+		return 0, -1, tserr.InvalidFormat(fmt.Sprintf("invalid BYDAY value: %s", byDay))
+	}
 	// The last two characters are always the weekday abbreviation.
 	wa := byDay[len(byDay)-2:]
 	// Parse the weekday abbreviation.
@@ -274,7 +309,7 @@ func parseByDay(byDay string) (int, time.Weekday, error) {
 	// If there is an error parsing the ordinal, return zero and the error.
 	if err != nil {
 		// If parsing fails, return zero, the weekday and the error.
-		return 0, wd, tserr.InvalidFormat(fmt.Sprintf("invalid ordinal: %s", op))
+		return 0, wd, tserr.InvalidFormat(fmt.Sprintf("invalid ordinal prefix: %s in BYDAY %s", op, byDay))
 	}
 	// Return the parsed ordinal and weekday.
 	return ordinal, wd, nil
@@ -284,7 +319,7 @@ func parseByDay(byDay string) (int, time.Weekday, error) {
 // It returns an error if the weekday is not recognized.
 func parseWeekday(s string) (time.Weekday, error) {
 	// Switch on the weekday string to determine the corresponding time.Weekday.
-	switch s {
+	switch strings.ToUpper(s) {
 	case "SU":
 		return time.Sunday, nil
 	case "MO":
