@@ -6,11 +6,13 @@ package tsicsparser
 // Package tsicsparser provides functions for parsing ICS files.
 import (
 	"fmt"     // For formatting error messages.
+	"math"    // For mathematical operations, such as checking for overflow.
 	"strconv" // For parsing integers.
 	"strings" // For splitting strings.
 	"time"    // For time operations.
 
-	"github.com/thorsphere/tserr" // For error handling.
+	"github.com/thorsphere/tserr"   // For error handling.
+	"github.com/thorsphere/tstable" // For creating table-like string representations of events.
 )
 
 // Event represents a calendar event with a summary and start time.
@@ -26,6 +28,8 @@ type Event struct {
 func parseEvent(scanner *ICSScanner, timezone Timezone) (Event, error) {
 	// Initialize an Event struct to hold the parsed event information.
 	var event Event
+	// Initialize a pointer to a time.Duration to hold the pending duration if DTSTART hasn't been seen yet.
+	var pendingDuration *time.Duration
 	// Loop through the lines of the scanner until END:VEVENT is encountered.
 	for scanner.Scan() {
 		// Read the next line from the scanner.
@@ -54,11 +58,28 @@ func parseEvent(scanner *ICSScanner, timezone Timezone) (Event, error) {
 		// Handle the END of the VEVENT component.
 		case "END":
 			switch parts.Value {
-			// If END:VEVENT, return the parsed event successfully.
-			case "VEVENT":
+			case "VEVENT": // If END:VEVENT is encountered, validate the event and return it.
+				// --- Validation ---
+				// DTSTART is REQUIRED per RFC 5545 §3.6.1.
+				// If DTEND or DURATION was seen but DTSTART was not, that's an error.
+				if event.Start.IsZero() {
+					if !event.End.IsZero() {
+						return Event{}, tserr.InvalidFormat("DTEND present without DTSTART in VEVENT")
+					}
+					if pendingDuration != nil {
+						return Event{}, tserr.InvalidFormat("DURATION present without DTSTART in VEVENT")
+					}
+					// No DTSTART at all — also an error.
+					return Event{}, tserr.InvalidFormat("missing required DTSTART in VEVENT")
+				}
+				// If only DTSTART was given (no DTEND, no DURATION), End defaults to Start.
+				// This is valid per RFC 5545: a point-in-time event.
+				if event.End.IsZero() {
+					event.End = event.Start
+				}
+				// Successfully parsed the VEVENT component; return the event.
 				return event, nil
-			// If END is for any other component, return an error indicating unexpected END.
-			default:
+			default: // If END is for any other component, return an error indicating unexpected END.
 				return Event{}, tserr.InvalidFormat(
 					fmt.Sprintf("unexpected END:%s inside VEVENT", parts.Value))
 			}
@@ -69,8 +90,9 @@ func parseEvent(scanner *ICSScanner, timezone Timezone) (Event, error) {
 			if err != nil {
 				return Event{}, err
 			}
+			switch keyBase {
 			// If the key base is "DTSTART", parse the datetime and timezone ID.
-			if keyBase == "DTSTART" {
+			case "DTSTART":
 				// Parse the local datetime from the value.
 				localTime, isUTC, err := parseICSDateTime(parts.Value)
 				// If there is an error parsing the datetime, return the error.
@@ -95,6 +117,68 @@ func parseEvent(scanner *ICSScanner, timezone Timezone) (Event, error) {
 						return Event{}, err
 					}
 				}
+
+				if pendingDuration != nil {
+					event.End = event.Start.Add(*pendingDuration)
+					pendingDuration = nil
+				}
+			case "DTEND":
+				// DTEND and DURATION can only be used once per event as well as DTEND and DURATION are mutually exclusive.
+				// If it is already set, return an error.
+				if !event.End.IsZero() {
+					return Event{}, tserr.InvalidFormat("DTEND already set or DURATION already set; DTEND and DURATION are mutually exclusive")
+				}
+				// DTEND and DURATION are mutually exclusive per RFC 5545 §3.6.1
+				if pendingDuration != nil {
+					return Event{}, tserr.InvalidFormat("DTEND and DURATION are mutually exclusive")
+				}
+				// Parse the local datetime from the value.
+				localTime, isUTC, err := parseICSDateTime(parts.Value)
+				// If there is an error parsing the datetime, return the error.
+				if err != nil {
+					return Event{}, err
+				}
+				// Check if the datetime is already UTC
+				if isUTC {
+					// If the datetime is already UTC, assign it directly to event.End.
+					event.End = localTime
+				} else {
+					// If the datetime is not UTC, check for the TZID parameter.
+					tzid, ok := params["TZID"]
+					if !ok {
+						// If the TZID is not present, return an error indicating that floating time is not supported.
+						return Event{}, tserr.InvalidFormat("floating time not supported: DTEND without TZID or Zulu suffix")
+					}
+					// Convert the local time to UTC using the timezone rules.
+					if event.End, err = convertToUTC(localTime, tzid, timezone); err != nil {
+						// If there is an error converting to UTC, return the error.
+						return Event{}, err
+					}
+				}
+			case "DURATION":
+				// DTEND and DURATION can only be used once per event as well as DTEND and DURATION are mutually exclusive.
+				// If it is already set, return an error.
+				if !event.End.IsZero() {
+					return Event{}, tserr.InvalidFormat("DTEND already set or DURATION already set; DTEND and DURATION are mutually exclusive")
+				}
+				// DURATION already set
+				if pendingDuration != nil {
+					return Event{}, tserr.InvalidFormat("DURATION already set")
+				}
+				// Parse the duration string into a time.Duration.
+				dur, err := parseDuration(parts.Value)
+				// If there is an error parsing the duration, return the error.
+				if err != nil {
+					return Event{}, err
+				}
+				// If DTSTART has already been parsed, compute End immediately.
+				if !event.Start.IsZero() {
+					// Set the End time by adding the duration to the Start time.
+					event.End = event.Start.Add(dur)
+				} else {
+					// DTSTART hasn't been seen yet. Store the duration temporarily.
+					pendingDuration = &dur
+				}
 			}
 		}
 	}
@@ -107,240 +191,156 @@ func parseEvent(scanner *ICSScanner, timezone Timezone) (Event, error) {
 	return Event{}, tserr.NotFound("END:VEVENT")
 }
 
-// convertToUTC converts a local time to UTC using the given timezone.
-// It returns the converted time and an error if any. If the TZID is empty,
-// it returns an error. If the TZID does not match the timezone's TZID,
-// it returns an error. If the timezone has no rules, it returns an error.
-func convertToUTC(localTime time.Time, tzid string, tz Timezone) (time.Time, error) {
-	// Return an error if the TZID is empty.
-	if tzid == "" {
-		return localTime, tserr.Empty("TZID")
+// parseDuration parses an ICS duration string (ISO 8601) and returns a time.Duration.
+// Examples: "PT0M", "PT1H30M", "P1DT2H", "P7W", "-PT1H", "+PT15M"
+//
+// Per RFC 5545 §3.3.6, the grammar is:
+//
+//	dur-value = (["+"] / "-") "P" (dur-date / dur-time | dur-week | dur-day)
+//	dur-date  = dur-day [dur-time]
+//	dur-time  = "T" (dur-hour / dur-minute / dur-second)
+//
+// At least one duration component is required; "P" and "PT" alone are invalid.
+// Values that would overflow time.Duration (an int64 of nanoseconds) are rejected
+// rather than silently wrapping around.
+func parseDuration(s string) (time.Duration, error) {
+	// If the string is empty or does not start with 'P', return an error.
+	if len(s) == 0 {
+		return 0, tserr.InvalidFormat(fmt.Sprintf("invalid duration: %s", s))
 	}
-	// Return an error if the TZID does not match the timezone's TZID.
-	if tzid != tz.TZID {
-		return localTime, tserr.InvalidFormat(fmt.Sprintf("TZID mismatch: %s != %s", tzid, tz.TZID))
+	// Handle an optional leading sign (RFC 5545 allows '+' or '-').
+	// A leading '-' negates the resulting duration.
+	sign := time.Duration(1)
+	switch s[0] {
+	case '+': // Leading '+' is optional and can be ignored.
+		s = s[1:] // Strip the '+' prefix
+	case '-': // Leading '-' indicates a negative duration.
+		sign = -1 // Negate the resulting duration
+		s = s[1:] // Strip the '-' prefix
 	}
-	// Return an error if the timezone has no rules.
-	if len(tz.Rules) == 0 {
-		return localTime, tserr.InvalidFormat("no rules in timezone")
+	// After stripping the sign, the next character must be 'P'.
+	if len(s) == 0 || s[0] != 'P' {
+		return 0, tserr.InvalidFormat(fmt.Sprintf("invalid duration: %s", s))
 	}
-	// Initialize pointers to Daylight and Standard rules.
-	var dr, sr *TimezoneRule
-	// Loop through the rules in the timezone to find Daylight and Standard rules.
-	for i := range tz.Rules {
-		rule := &tz.Rules[i]
-		switch rule.Type {
-		case Daylight:
-			dr = rule
-		case Standard:
-			sr = rule
+	// Strip the 'P' prefix
+	s = s[1:]
+	// maxDuration is the largest value representable by time.Duration
+	// (an int64 count of nanoseconds). We accumulate the magnitude into dur
+	// (always non-negative) and apply the sign at the end, so all overflow
+	// checks below are against this upper bound.
+	const maxDuration = time.Duration(math.MaxInt64)
+	var (
+		// Initialize variables to hold the total duration and a flag indicating if we are in the time part.
+		dur    time.Duration
+		inTime bool
+		// Track whether at least one duration component was parsed, so that
+		// bare "P" or "PT" (which produce no components) are rejected.
+		components int
+	)
+	// Loop through the string until all characters are processed.
+	for len(s) > 0 {
+		// If the next character is 'T', we are entering the time part of the duration.
+		if s[0] == 'T' {
+			// Set the inTime flag to true for the next iteration.
+			inTime = true
+			// Strip the 'T' prefix from the string for the next iteration.
+			s = s[1:]
+			// Continue to the next iteration to process the time part.
+			continue
 		}
-	}
-	// If both Daylight and Standard rules do not exist, return an error.
-	if dr == nil && sr == nil {
-		return localTime, tserr.InvalidFormat("no daylight and no standard rule in timezone")
-	} else if dr == nil {
-		// Only a Standard rule exists, no DST transitions.
-		// Apply the Standard rule's TZOffsetTo directly to convert local time to UTC.
-		return localTime.Add(-time.Duration(sr.TZOffsetTo) * time.Second), nil
-	} else if sr == nil {
-		// Only a Daylight rule exists, no Standard transitions.
-		// Apply the Daylight rule's TZOffsetTo directly to convert local time to UTC.
-		return localTime.Add(-time.Duration(dr.TZOffsetTo) * time.Second), nil
-	}
-	// Both Daylight and Standard rules exist.
-	// Compute transition times for both rules in the year of localTime.
-	year := localTime.Year()
-	// Compute the transition time for the Daylight rule in the year.
-	daylight, err := transitionTime(*dr, year)
-	if err != nil {
-		return localTime, err
-	}
-	// Compute the transition time for the Standard rule in the year.
-	standard, err := transitionTime(*sr, year)
-	if err != nil {
-		return localTime, err
-	}
-	// Determine which transition happens first in the year.
-	// After a transition, that rule's TZOffsetTo is in effect.
-	var offset int
-	if daylight.Before(standard) {
-		// --- Northern Hemisphere ---
-		// Spring Forward (Standard -> Daylight) happens at 'daylight'
-		// Fall Back (Daylight -> Standard) happens at 'standard'
-		if localTime.Before(daylight) {
-			// Strictly before spring transition
-			offset = sr.TZOffsetTo
-		} else if !localTime.Before(standard) {
-			// At or after autumn transition
-			offset = sr.TZOffsetTo
-		} else {
-			// At or after spring transition, but before autumn transition
-			offset = dr.TZOffsetTo
+		// Find the run of digits forming the next number.
+		i := 0
+		// Loop through the string to find the end of the number substring.
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			i++
 		}
-	} else {
-		// --- Southern Hemisphere ---
-		// Spring Back (Daylight -> Standard) happens at 'standard'
-		// Fall Forward (Standard -> Daylight) happens at 'daylight'
-
-		if localTime.Before(standard) {
-			// Strictly before autumn transition
-			offset = dr.TZOffsetTo
-		} else if !localTime.Before(daylight) {
-			// At or after spring transition
-			offset = dr.TZOffsetTo
-		} else {
-			// At or after autumn transition, but before spring transition
-			offset = sr.TZOffsetTo
+		// If no digits were found, return an error indicating an invalid duration format.
+		if i == 0 {
+			return 0, tserr.InvalidFormat(fmt.Sprintf("invalid duration: expected number at %s", s))
 		}
-	}
-	// Apply the offset to convert local time to UTC.
-	return localTime.Add(-time.Duration(offset) * time.Second), nil
-}
-
-// transitionTime computes the local datetime when a timezone rule takes effect
-// in the given year. It uses the rule's RRULE (if present) to determine the
-// recurring date, falling back to the rule's DTSTART for fixed transitions.
-func transitionTime(rule TimezoneRule, year int) (time.Time, error) {
-	// If the rule has no recurrence rule, the transition is a fixed one-time event.
-	// Return the DTSTART as-is (only meaningful for the year it was defined in).
-	if rule.RRule == nil {
-		return rule.DTStart, nil
-	}
-	// Determine the month from the RRULE's ByMonth field.
-	month := time.Month(rule.RRule.ByMonth)
-	// If the RRULE's BYMONTH is missing (0), fall back to the month from DTSTART.
-	// This handles legacy or malformed rules where BYMONTH is absent.
-	if month == 0 {
-		month = rule.DTStart.Month()
-	}
-	// Compute the day-of-month for the Nth occurrence of the weekday in that month.
-	day, err := nthWeekday(year, month, rule.RRule.ByDay)
-	// If the Nth occurrence is out of bounds, return an error.
-	if err != nil {
-		return time.Time{}, err
-	}
-	// Construct the transition datetime using the time-of-day from DTStart.
-	return time.Date(year, month, day,
-		rule.DTStart.Hour(), rule.DTStart.Minute(), rule.DTStart.Second(), 0, time.UTC), nil
-}
-
-// nthWeekday returns the day-of-month for the Nth occurrence of a weekday
-// in the given month and year. The byDay string is in RRULE BYDAY format,
-// e.g., "2SU" (2nd Sunday), "-1SU" (last Sunday), "1FR" (1st Friday).
-// If the BYDAY value has no ordinal prefix (e.g., "SU"), it returns an error
-// because weekly recurrence is invalid within VTIMEZONE definitions.
-func nthWeekday(year int, month time.Month, byDay string) (int, error) {
-	// Parse the ordinal and weekday abbreviation from the BYDAY value.
-	ordinal, wd, err := parseByDay(byDay)
-	// If there is an error parsing the BYDAY value, return zero and the error.
-	if err != nil {
-		return 0, err
-	}
-
-	// Positive ordinal: count forward from the start of the month.
-	if ordinal > 0 {
-		// Get the first day of the month and its weekday.
-		first := time.Date(year, month, 1, 0, 0, 0, 0, time.UTC)
-		firstWeekday := first.Weekday()
-		// Calculate the offset from the 1st to the first occurrence of the target weekday.
-		offset := (int(wd) - int(firstWeekday) + 7) % 7
-		// Calculate the day-of-month for the Nth occurrence.
-		targetDay := 1 + offset + (ordinal-1)*7
-		// If the target day is outside the month, return an error.
-		if time.Date(year, month, targetDay, 0, 0, 0, 0, time.UTC).Month() != month {
-			return 0, tserr.InvalidFormat(fmt.Sprintf("occurrence %d of %s out of bounds for month %s", ordinal, byDay, month))
+		// Parse the number. The digit scan guarantees only digits, but we
+		// assert the error explicitly so a future refactor cannot silently
+		// produce a zero value. Note: strconv.Atoi also rejects numbers that
+		// do not fit in platform `int`, which on 64-bit caps n at MaxInt64.
+		n, err := strconv.Atoi(s[:i])
+		// If there is an error parsing the number, return an error indicating an invalid duration format.
+		if err != nil {
+			return 0, tserr.InvalidFormat(fmt.Sprintf("invalid duration: bad number %q: %v", s[:i], err))
 		}
-		return targetDay, nil
-	}
-
-	// Negative ordinal: count backward from the end of the month.
-	if ordinal < 0 {
-		// Get the last day of the month and its weekday.
-		last := time.Date(year, month+1, 0, 0, 0, 0, 0, time.UTC)
-		lastDay := last.Day()
-		lastWeekday := last.Weekday()
-
-		// Calculate the offset from the last day back to the last occurrence of the target weekday.
-		backOffset := (int(lastWeekday) - int(wd) + 7) % 7
-		lastOccurrence := lastDay - backOffset
-
-		// Move back by (|ordinal| - 1) weeks. Since ordinal is negative, (ordinal+1)*7
-		// gives the correct offset (e.g., -1 → 0 weeks back, -2 → -7 days back).
-		targetDay := lastOccurrence + (ordinal+1)*7
-		// If the target day is outside the month, return an error.
-		if targetDay < 1 {
-			return 0, tserr.InvalidFormat(fmt.Sprintf("negative occurrence %d of %s out of bounds for month %s", ordinal, byDay, month))
+		// Strip the number from the string for the next iteration.
+		s = s[i:]
+		// If the string is empty after the number, return an error indicating a missing unit.
+		if len(s) == 0 {
+			return 0, tserr.InvalidFormat("invalid duration: missing unit")
 		}
-		return targetDay, nil
+		// The next character is the unit (W, D, H, M, S).
+		unit := s[0]
+		// Strip the unit character from the string for the next iteration.
+		s = s[1:]
+		// Resolve the per-unit magnitude once, validating the unit in the same
+		// switch. Keeping the unit→duration mapping in one place makes the
+		// overflow check below uniform across all units.
+		var unitDur time.Duration
+		switch {
+		case !inTime && unit == 'W': // Weeks
+			unitDur = 7 * 24 * time.Hour
+		case !inTime && unit == 'D': // Days
+			unitDur = 24 * time.Hour
+		case inTime && unit == 'H': // Hours
+			unitDur = time.Hour
+		case inTime && unit == 'M': // Minutes
+			unitDur = time.Minute
+		case inTime && unit == 'S': // Seconds
+			unitDur = time.Second
+		default: // Invalid unit, or unit in the wrong section (e.g. 'H' before 'T').
+			return 0, tserr.InvalidFormat(fmt.Sprintf("invalid duration unit: %c", unit))
+		}
+		// --- Overflow guards ---
+		// time.Duration is an int64 of nanoseconds, so very large component
+		// values (e.g. "P99999999W") would silently wrap without these checks.
+		//
+		// 1) n * unitDur must fit in a time.Duration. Since unitDur > 0 for
+		//    every valid unit, maxDuration/unitDur is the largest n that
+		//    stays in range. Comparing in time.Duration space avoids any
+		//    dependence on the platform width of `int`.
+		if time.Duration(n) > maxDuration/unitDur {
+			return 0, tserr.InvalidFormat(fmt.Sprintf("duration overflow: %d%c exceeds maximum representable time.Duration", n, unit))
+		}
+		// Compute the contribution of this component to the total duration.
+		contribution := time.Duration(n) * unitDur
+		// 2) The running total dur + contribution must also fit. maxDuration-dur
+		//    is the remaining headroom (both dur and contribution are
+		//    non-negative at this point).
+		if contribution > maxDuration-dur {
+			return 0, tserr.InvalidFormat("duration overflow: cumulative duration exceeds maximum representable time.Duration")
+		}
+		dur += contribution
+		// Increment the components counter to indicate that at least one duration component was parsed.
+		components++
 	}
-	// If ordinal is 0, no modifier was provided (e.g., "SU").
-	// This means "every Sunday", which is invalid/unsupported inside a VTIMEZONE block.
-	return 0, tserr.InvalidFormat(fmt.Sprintf("unsupported weekday rule without ordinal prefix inside VTIMEZONE: %s", byDay))
-}
-
-// parseByDay parses an RRULE BYDAY value like "2SU" or "-1SU" into
-// an ordinal (positive or negative) and a time.Weekday.
-// If no ordinal is present (e.g., "SU"), it returns 0 for the ordinal,
-// which will be rejected as an error by the caller inside VTIMEZONE context.
-func parseByDay(byDay string) (int, time.Weekday, error) {
-	// Safeguard against out-of-bounds access: Check whether the string is long enough.
-	// Since a day of the week always consists of at least 2 characters (e.g., "SU"),
-	// anything shorter than that is definitely invalid.
-	if len(byDay) < 2 {
-		return 0, -1, tserr.InvalidFormat(fmt.Sprintf("invalid BYDAY value: %s", byDay))
+	// RFC 5545 requires at least one duration component. Reject bare "P",
+	// "PT", "-P", "+PT", etc., which would otherwise parse as zero.
+	if components == 0 {
+		return 0, tserr.InvalidFormat("invalid duration: no components after 'P'")
 	}
-	// The last two characters are always the weekday abbreviation.
-	wa := byDay[len(byDay)-2:]
-	// Parse the weekday abbreviation.
-	wd, err := parseWeekday(wa)
-	// If there is an error parsing the weekday, return zero and the error.
-	if err != nil {
-		return 0, -1, err
-	}
-	// If the BYDAY value is only two characters, there is no ordinal prefix.
-	if len(byDay) == 2 {
-		return 0, wd, nil
-	}
-	// Extract the ordinal prefix (e.g., "2" from "2SU", "-1" from "-1SU").
-	op := byDay[:len(byDay)-2]
-	// Parse the ordinal prefix (e.g., "2" from "2SU", "-1" from "-1SU").
-	ordinal, err := strconv.Atoi(op)
-	// If there is an error parsing the ordinal, return zero and the error.
-	if err != nil {
-		// If parsing fails, return zero, the weekday and the error.
-		return 0, wd, tserr.InvalidFormat(fmt.Sprintf("invalid ordinal prefix: %s in BYDAY %s", op, byDay))
-	}
-	// Return the parsed ordinal and weekday.
-	return ordinal, wd, nil
-}
-
-// parseWeekday parses a string representing a weekday and returns the corresponding time.Weekday.
-// It returns an error if the weekday is not recognized.
-func parseWeekday(s string) (time.Weekday, error) {
-	// Switch on the weekday string to determine the corresponding time.Weekday.
-	switch strings.ToUpper(s) {
-	case "SU":
-		return time.Sunday, nil
-	case "MO":
-		return time.Monday, nil
-	case "TU":
-		return time.Tuesday, nil
-	case "WE":
-		return time.Wednesday, nil
-	case "TH":
-		return time.Thursday, nil
-	case "FR":
-		return time.Friday, nil
-	case "SA":
-		return time.Saturday, nil
-	default: // If the weekday is not recognized, return an error.
-		return -1, tserr.InvalidFormat(fmt.Sprintf("invalid weekday: %s", s))
-	}
+	// Return the parsed duration.
+	return sign * dur, nil
 }
 
 // splitKeyParams splits a key string into its base name and parameters.
 // The function returns the base name, a map of parameters, and an error if any.
+//
+// Per RFC 5545 §3.2, parameter values may be quoted with double quotes,
+// e.g. DTSTART;TZID="US-Eastern":20250101T120000. Quoting is used when the
+// value contains characters that would otherwise be ambiguous (colons,
+// semicolons, commas). The quotes are not part of the value and are stripped
+// here so that downstream comparisons (e.g. tzid != tz.TZID in convertToUTC)
+// compare the bare value.
+//
+// Only a single surrounding pair of double quotes is stripped; embedded or
+// unbalanced quotes are left intact, matching the conservative behavior of
+// most ICS parsers. A parameter value that is just a pair of quotes (e.g.
+// TZID="") yields an empty string, which is a valid (if unusual) value.
 func splitKeyParams(key string) (string, map[string]string, error) {
 	// Split the key into its base name and parameters using the semicolon as a delimiter.
 	parts := strings.Split(key, ";")
@@ -361,4 +361,24 @@ func splitKeyParams(key string) (string, map[string]string, error) {
 	}
 	// Return the base key and the map of parameters.
 	return keyBase, params, nil
+}
+
+// String returns a formatted string representation of the Event struct.
+// It uses the tstable package to create a table-like output.
+func (ev Event) String() string {
+	// Create a new table with the event's UID as the title row
+	tbl, err := tstable.New([]string{"UID", ev.Uid})
+	// If there is an error creating the table, return an error string
+	if err != nil {
+		return fmt.Sprintf("<error creating table: %v>", err)
+	}
+	// Add rows for each field of the event
+	tbl.AddRow([]string{"Summary", ev.Summary})
+	tbl.AddRow([]string{"Location", ev.Location})
+	tbl.AddRow([]string{"Start", ev.Start.Format(time.RFC3339)})
+	tbl.AddRow([]string{"End", ev.End.Format(time.RFC3339)})
+	// Set the multi-line flag for the second column (UID)
+	tbl.SetMultiline(ev.Uid)
+	// Return the formatted table as a string
+	return tbl.String()
 }
