@@ -73,6 +73,8 @@ func parseTimezone(scanner *ICSScanner) (Timezone, error) {
 		switch parts.Key {
 		// Handle the TZID property, which specifies the timezone identifier.
 		case "TZID":
+			// Property values are never quoted per RFC 5545 §3.3.11 (text type);
+			// quoting is a parameter-only concept (§3.2). No stripping needed here.
 			tz.TZID = parts.Value
 			// Handle the BEGIN of a timezone rule (DAYLIGHT or STANDARD).
 		case "BEGIN":
