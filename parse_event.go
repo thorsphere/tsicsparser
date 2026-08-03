@@ -5,9 +5,7 @@ package tsicsparser
 
 // Package tsicsparser provides functions for parsing ICS files.
 import (
-	"fmt"     // For formatting error messages.
-	"math"    // For mathematical operations, such as checking for overflow.
-	"strconv" // For parsing integers.
+	"fmt" // For formatting error messages.
 	"strings" // For splitting strings.
 	"time"    // For time operations.
 
@@ -93,31 +91,15 @@ func parseEvent(scanner *ICSScanner, timezone Timezone) (Event, error) {
 			switch keyBase {
 			// If the key base is "DTSTART", parse the datetime and timezone ID.
 			case "DTSTART":
-				// Parse the local datetime from the value.
-				localTime, isUTC, err := parseICSDateTime(parts.Value)
-				// If there is an error parsing the datetime, return the error.
-				if err != nil {
+				// DTSTART acan only be used once per event. If it is already set, return an error.
+				if !event.Start.IsZero() {
+					return Event{}, tserr.InvalidFormat("DTSTART already set")
+				}
+				// Parse the DTSTART value into a UTC time.Time, handling both UTC-suffixed and TZID-qualified local times.
+				if event.Start, err = parseDTValue(parts.Value, params, timezone, "DTSTART"); err != nil {
 					return Event{}, err
 				}
-				// Check if the datetime is already UTC
-				if isUTC {
-					// Already UTC, no conversion needed
-					event.Start = localTime
-				} else {
-					// Not UTC, convert to UTC using the timezone rules.
-					tzid, ok := params["TZID"]
-					// If the TZID is not present, return an error.
-					if !ok {
-						return Event{}, tserr.InvalidFormat(
-							"floating time not supported: DTSTART without TZID or Zulu suffix; " +
-								"floating times cannot be converted to UTC as required by this package")
-					}
-					// Convert the local time to UTC using the timezone rules.
-					if event.Start, err = convertToUTC(localTime, tzid, timezone); err != nil {
-						return Event{}, err
-					}
-				}
-
+				// If a DURATION was seen before DTSTART, compute End now that Start is known.
 				if pendingDuration != nil {
 					event.End = event.Start.Add(*pendingDuration)
 					pendingDuration = nil
@@ -132,28 +114,9 @@ func parseEvent(scanner *ICSScanner, timezone Timezone) (Event, error) {
 				if pendingDuration != nil {
 					return Event{}, tserr.InvalidFormat("DTEND and DURATION are mutually exclusive")
 				}
-				// Parse the local datetime from the value.
-				localTime, isUTC, err := parseICSDateTime(parts.Value)
-				// If there is an error parsing the datetime, return the error.
-				if err != nil {
+				// Parse the DTEND value into a UTC time.Time, handling both UTC-suffixed and TZID-qualified local times.
+				if event.End, err = parseDTValue(parts.Value, params, timezone, "DTEND"); err != nil {
 					return Event{}, err
-				}
-				// Check if the datetime is already UTC
-				if isUTC {
-					// If the datetime is already UTC, assign it directly to event.End.
-					event.End = localTime
-				} else {
-					// If the datetime is not UTC, check for the TZID parameter.
-					tzid, ok := params["TZID"]
-					if !ok {
-						// If the TZID is not present, return an error indicating that floating time is not supported.
-						return Event{}, tserr.InvalidFormat("floating time not supported: DTEND without TZID or Zulu suffix")
-					}
-					// Convert the local time to UTC using the timezone rules.
-					if event.End, err = convertToUTC(localTime, tzid, timezone); err != nil {
-						// If there is an error converting to UTC, return the error.
-						return Event{}, err
-					}
 				}
 			case "DURATION":
 				// DTEND and DURATION can only be used once per event as well as DTEND and DURATION are mutually exclusive.
@@ -191,140 +154,33 @@ func parseEvent(scanner *ICSScanner, timezone Timezone) (Event, error) {
 	return Event{}, tserr.NotFound("END:VEVENT")
 }
 
-// parseDuration parses an ICS duration string (ISO 8601) and returns a time.Duration.
-// Examples: "PT0M", "PT1H30M", "P1DT2H", "P7W", "-PT1H", "+PT15M"
+// parseDTValue parses a DTSTART or DTEND property value into a UTC time.Time.
+// It handles both UTC-suffixed datetimes (e.g. "20250101T120000Z") and
+// TZID-qualified local times (e.g. with params["TZID"] set), converting the
+// latter to UTC via the calendar's timezone rules.
 //
-// Per RFC 5545 §3.3.6, the grammar is:
-//
-//	dur-value = (["+"] / "-") "P" (dur-date / dur-time | dur-week | dur-day)
-//	dur-date  = dur-day [dur-time]
-//	dur-time  = "T" (dur-hour / dur-minute / dur-second)
-//
-// At least one duration component is required; "P" and "PT" alone are invalid.
-// Values that would overflow time.Duration (an int64 of nanoseconds) are rejected
-// rather than silently wrapping around.
-func parseDuration(s string) (time.Duration, error) {
-	// If the string is empty or does not start with 'P', return an error.
-	if len(s) == 0 {
-		return 0, tserr.InvalidFormat(fmt.Sprintf("invalid duration: %s", s))
+// propName ("DTSTART" or "DTEND") is used only to construct error messages
+// when the value is a floating time (no TZID and no Zulu suffix).
+func parseDTValue(value string, params map[string]string, tz Timezone, propName string) (time.Time, error) {
+	// Parse the local datetime from the value.
+	localTime, isUTC, err := parseICSDateTime(value)
+	if err != nil {
+		return time.Time{}, err
 	}
-	// Handle an optional leading sign (RFC 5545 allows '+' or '-').
-	// A leading '-' negates the resulting duration.
-	sign := time.Duration(1)
-	switch s[0] {
-	case '+': // Leading '+' is optional and can be ignored.
-		s = s[1:] // Strip the '+' prefix
-	case '-': // Leading '-' indicates a negative duration.
-		sign = -1 // Negate the resulting duration
-		s = s[1:] // Strip the '-' prefix
+	// If the datetime is already UTC (Zulu suffix), no conversion is needed.
+	if isUTC {
+		return localTime, nil
 	}
-	// After stripping the sign, the next character must be 'P'.
-	if len(s) == 0 || s[0] != 'P' {
-		return 0, tserr.InvalidFormat(fmt.Sprintf("invalid duration: %s", s))
+	// Not UTC — a TZID parameter is required to convert via the timezone rules.
+	tzid, ok := params["TZID"]
+	if !ok {
+		return time.Time{}, tserr.InvalidFormat(fmt.Sprintf(
+			"floating time not supported: %s without TZID or Zulu suffix; "+
+				"floating times cannot be converted to UTC as required by this package",
+			propName))
 	}
-	// Strip the 'P' prefix
-	s = s[1:]
-	// maxDuration is the largest value representable by time.Duration
-	// (an int64 count of nanoseconds). We accumulate the magnitude into dur
-	// (always non-negative) and apply the sign at the end, so all overflow
-	// checks below are against this upper bound.
-	const maxDuration = time.Duration(math.MaxInt64)
-	var (
-		// Initialize variables to hold the total duration and a flag indicating if we are in the time part.
-		dur    time.Duration
-		inTime bool
-		// Track whether at least one duration component was parsed, so that
-		// bare "P" or "PT" (which produce no components) are rejected.
-		components int
-	)
-	// Loop through the string until all characters are processed.
-	for len(s) > 0 {
-		// If the next character is 'T', we are entering the time part of the duration.
-		if s[0] == 'T' {
-			// Set the inTime flag to true for the next iteration.
-			inTime = true
-			// Strip the 'T' prefix from the string for the next iteration.
-			s = s[1:]
-			// Continue to the next iteration to process the time part.
-			continue
-		}
-		// Find the run of digits forming the next number.
-		i := 0
-		// Loop through the string to find the end of the number substring.
-		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
-			i++
-		}
-		// If no digits were found, return an error indicating an invalid duration format.
-		if i == 0 {
-			return 0, tserr.InvalidFormat(fmt.Sprintf("invalid duration: expected number at %s", s))
-		}
-		// Parse the number. The digit scan guarantees only digits, but we
-		// assert the error explicitly so a future refactor cannot silently
-		// produce a zero value. Note: strconv.Atoi also rejects numbers that
-		// do not fit in platform `int`, which on 64-bit caps n at MaxInt64.
-		n, err := strconv.Atoi(s[:i])
-		// If there is an error parsing the number, return an error indicating an invalid duration format.
-		if err != nil {
-			return 0, tserr.InvalidFormat(fmt.Sprintf("invalid duration: bad number %q: %v", s[:i], err))
-		}
-		// Strip the number from the string for the next iteration.
-		s = s[i:]
-		// If the string is empty after the number, return an error indicating a missing unit.
-		if len(s) == 0 {
-			return 0, tserr.InvalidFormat("invalid duration: missing unit")
-		}
-		// The next character is the unit (W, D, H, M, S).
-		unit := s[0]
-		// Strip the unit character from the string for the next iteration.
-		s = s[1:]
-		// Resolve the per-unit magnitude once, validating the unit in the same
-		// switch. Keeping the unit→duration mapping in one place makes the
-		// overflow check below uniform across all units.
-		var unitDur time.Duration
-		switch {
-		case !inTime && unit == 'W': // Weeks
-			unitDur = 7 * 24 * time.Hour
-		case !inTime && unit == 'D': // Days
-			unitDur = 24 * time.Hour
-		case inTime && unit == 'H': // Hours
-			unitDur = time.Hour
-		case inTime && unit == 'M': // Minutes
-			unitDur = time.Minute
-		case inTime && unit == 'S': // Seconds
-			unitDur = time.Second
-		default: // Invalid unit, or unit in the wrong section (e.g. 'H' before 'T').
-			return 0, tserr.InvalidFormat(fmt.Sprintf("invalid duration unit: %c", unit))
-		}
-		// --- Overflow guards ---
-		// time.Duration is an int64 of nanoseconds, so very large component
-		// values (e.g. "P99999999W") would silently wrap without these checks.
-		//
-		// 1) n * unitDur must fit in a time.Duration. Since unitDur > 0 for
-		//    every valid unit, maxDuration/unitDur is the largest n that
-		//    stays in range. Comparing in time.Duration space avoids any
-		//    dependence on the platform width of `int`.
-		if time.Duration(n) > maxDuration/unitDur {
-			return 0, tserr.InvalidFormat(fmt.Sprintf("duration overflow: %d%c exceeds maximum representable time.Duration", n, unit))
-		}
-		// Compute the contribution of this component to the total duration.
-		contribution := time.Duration(n) * unitDur
-		// 2) The running total dur + contribution must also fit. maxDuration-dur
-		//    is the remaining headroom (both dur and contribution are
-		//    non-negative at this point).
-		if contribution > maxDuration-dur {
-			return 0, tserr.InvalidFormat("duration overflow: cumulative duration exceeds maximum representable time.Duration")
-		}
-		dur += contribution
-		// Increment the components counter to indicate that at least one duration component was parsed.
-		components++
-	}
-	// RFC 5545 requires at least one duration component. Reject bare "P",
-	// "PT", "-P", "+PT", etc., which would otherwise parse as zero.
-	if components == 0 {
-		return 0, tserr.InvalidFormat("invalid duration: no components after 'P'")
-	}
-	// Return the parsed duration.
-	return sign * dur, nil
+	// Convert the local time to UTC using the timezone rules.
+	return convertToUTC(localTime, tzid, tz)
 }
 
 // splitKeyParams splits a key string into its base name and parameters.
@@ -352,12 +208,22 @@ func splitKeyParams(key string) (string, map[string]string, error) {
 	for _, param := range parts[1:] {
 		// Split each parameter into key and value using the equals sign as a delimiter.
 		paramParts := strings.SplitN(param, "=", 2)
-		// If there are exactly two parts (key and value), add them to the params map.
-		if len(paramParts) == 2 {
-			params[paramParts[0]] = paramParts[1]
-		} else { // If there are not exactly two parts, return an error.
+		// If there are not exactly two parts (key and value), return an error.
+		if len(paramParts) != 2 {
 			return keyBase, nil, tserr.InvalidFormat(fmt.Sprintf("invalid parameter format: %s", param))
 		}
+		// Strip an optional surrounding pair of double quotes from the value.
+		// RFC 5545 §3.2 allows parameter values to be quoted, e.g.
+		// TZID="US-Eastern". The quotes are syntactic delimiters, not part of
+		// the value, so they must be removed before storing the value;
+		// otherwise downstream comparisons (tzid != tz.TZID) would fail on
+		// quoted input. Only a single balanced outer pair is stripped —
+		// embedded quotes or unbalanced quotes are left as-is.
+		value := paramParts[1]
+		if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
+			value = value[1 : len(value)-1]
+		}
+		params[paramParts[0]] = value
 	}
 	// Return the base key and the map of parameters.
 	return keyBase, params, nil

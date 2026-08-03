@@ -3,11 +3,13 @@
 // (FSL-1.1-ALv2) that can be found in the LICENSE file.
 package tsicsparser_test
 
-// Import necessary packages for testing and ICS parsing.
+// Import the necessary packages for testing, string manipulation, and custom error handling.
 import (
+	"fmt"     // For formatting error messages.
 	"strings" // For string manipulation.
 	"testing" // For writing test cases.
 
+	"github.com/thorsphere/lpstats"     // For comparing string maps in tests.
 	"github.com/thorsphere/tserr"       // For error handling.
 	"github.com/thorsphere/tsfio"       // For file handling utilities.
 	"github.com/thorsphere/tsicsparser" // For testing the tsicsparser package.
@@ -73,5 +75,97 @@ func TestParseEvent(t *testing.T) {
 	// Evaluate the parsed timezone against the golden file to ensure correctness.
 	if err := tsfio.EvalGoldenFile(&tsfio.Testcase{Name: "events", Data: sb.String()}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestSplitKeyParams tests the SplitKeyParams function.
+// It checks that the function correctly splits a key string into its base
+// name and a map of parameters. It fails if the function returns an error
+// or if the parsed base/params don't match the expected values.
+func TestSplitKeyParams(t *testing.T) {
+	// Define a set of test cases covering the common shapes of ICS keys.
+	tests := []struct {
+		name       string
+		input      string
+		wantBase   string
+		wantParams map[string]string
+	}{
+		{
+			name:       "no parameters",
+			input:      "DTSTART",
+			wantBase:   "DTSTART",
+			wantParams: map[string]string{},
+		},
+		{
+			name:       "single parameter",
+			input:      "DTSTART;TZID=America/New_York",
+			wantBase:   "DTSTART",
+			wantParams: map[string]string{"TZID": "America/New_York"},
+		},
+		{
+			name:       "multiple parameters",
+			input:      "DTSTART;TZID=US-Eastern;VALUE=DATE-TIME",
+			wantBase:   "DTSTART",
+			wantParams: map[string]string{"TZID": "US-Eastern", "VALUE": "DATE-TIME"},
+		},
+		{
+			name:       "empty parameter value",
+			input:      "DTSTART;TZID=",
+			wantBase:   "DTSTART",
+			wantParams: map[string]string{"TZID": ""},
+		},
+	}
+	// Run each test case as a subtest for clearer failure attribution.
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Split the key into base name and parameters.
+			base, params, err := tsicsparser.SplitKeyParams(tt.input)
+			// Fail immediately if an unexpected error is returned.
+			if err != nil {
+				t.Fatal(tserr.Op(&tserr.OpArgs{Op: "splitKeyParams", Err: err}))
+			}
+			// Check that the base name matches the expected value.
+			if base != tt.wantBase {
+				t.Error(tserr.EqualStr(&tserr.EqualStrArgs{
+					Var:    "base",
+					Want:   tt.wantBase,
+					Actual: base,
+				}))
+			}
+			// Check that the parameter map matches the expected map.
+			if !lpstats.EqualStrMaps(params, tt.wantParams) {
+				t.Error(tserr.EqualStr(&tserr.EqualStrArgs{
+					Var:    "params",
+					Want:   fmt.Sprintf("%v", tt.wantParams),
+					Actual: fmt.Sprintf("%v", params),
+				}))
+			}
+		})
+	}
+}
+
+// TestSplitKeyParamsErr tests the SplitKeyParams function.
+// It checks that the function returns an error for parameter strings that
+// don't contain '='. It fails if the function returns nil.
+func TestSplitKeyParamsErr(t *testing.T) {
+	// Define a set of test cases for malformed parameter formats.
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"trailing parameter without equals", "DTSTART;INVALID"},
+		{"second parameter without equals", "DTSTART;TZID=US;ANOTHER"},
+		{"only semicolon", "DTSTART;"},
+	}
+	// Loop through the tests and verify that each one returns an error.
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Split the key into base name and parameters.
+			_, _, err := tsicsparser.SplitKeyParams(tt.input)
+			// Verify that an error is returned for the malformed input.
+			if err == nil {
+				t.Error(tserr.NilFailed("splitKeyParams"))
+			}
+		})
 	}
 }
