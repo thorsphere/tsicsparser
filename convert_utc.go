@@ -92,54 +92,62 @@ func convertToUTC(localTime time.Time, tzid string, tz Timezone) (time.Time, err
 	if err != nil {
 		return localTime, err
 	}
-	// Determine which transition happens first in the year.
-	// After a transition, that rule's TZOffsetTo is in effect.
+	// --- Unified offset selection (hemisphere-agnostic) ---
 	//
-	// Boundary convention: at the exact transition instant, the NEW offset
-	// (the rule whose transition is occurring) is selected. This follows
-	// from the use of Before() for the "strictly before" branch and
-	// !Before() for the "at or after" branch — the instant itself falls
-	// into the latter, i.e. the post-transition offset.
-	var offset int
+	// Both hemispheres follow the same rule once the transitions are ordered:
+	//
+	//   - first  = the earlier transition in the year, with its rule (firstRule)
+	//   - second = the later  transition in the year, with its rule (secondRule)
+	//
+	//   Period              | Offset in effect
+	//   --------------------|---------------------------
+	//   before first        | secondRule.TZOffsetTo  (outside)
+	//   [first, second)     | firstRule.TZOffsetTo   (between)
+	//   at or after second  | secondRule.TZOffsetTo  (outside)
+	//
+	// Why this is correct for both hemispheres:
+	//
+	//   Northern: daylight < standard.
+	//     first=daylight (dr), second=standard (sr).
+	//     between  → dr.TZOffsetTo (Daylight)
+	//     outside → sr.TZOffsetTo (Standard)
+	//
+	//   Southern: standard < daylight.
+	//     first=standard (sr), second=daylight (dr).
+	//     between  → sr.TZOffsetTo (Standard)
+	//     outside → dr.TZOffsetTo (Daylight)
+	//
+	// Boundary convention (unchanged): at a transition instant, the NEW
+	// offset is selected. localTime == first falls into the "between" branch
+	// (firstRule's offset, which is the one taking effect at 'first');
+	// localTime == second falls into the "outside" branch (secondRule's
+	// offset, which is the one taking effect at 'second').
+	var first, second time.Time
+	var firstRule, secondRule *TimezoneRule
 	if daylight.Before(standard) {
-		// --- Northern Hemisphere ---
-		// Spring Forward (Standard -> Daylight) happens at 'daylight'
-		// Fall Back (Daylight -> Standard) happens at 'standard'
-		if localTime.Before(daylight) {
-			// Strictly before spring transition: Standard offset in effect.
-			offset = sr.TZOffsetTo
-		} else if !localTime.Before(standard) {
-			// At or after autumn transition: Standard offset in effect.
-			// (localTime == standard → Standard, i.e. the new offset.)
-			offset = sr.TZOffsetTo
-		} else {
-			// At or after spring transition, but before autumn transition:
-			// Daylight offset in effect.
-			// (localTime == daylight → Daylight, i.e. the new offset.)
-			offset = dr.TZOffsetTo
-		}
+		first, firstRule = daylight, dr
+		second, secondRule = standard, sr
 	} else {
-		// --- Southern Hemisphere ---
-		// The seasons are reversed: the Standard transition ('standard')
-		// happens first (autumn), and the Daylight transition ('daylight')
-		// happens later (spring).
-		//
-		// Spring Back (Daylight -> Standard) happens at 'standard'
-		// Fall Forward (Standard -> Daylight) happens at 'daylight'
-		if localTime.Before(standard) {
-			// Strictly before autumn transition
-			offset = dr.TZOffsetTo
-		} else if !localTime.Before(daylight) {
-			// At or after spring transition: Daylight offset in effect.
-			// (localTime == daylight → Daylight, i.e. the new offset.)
-			offset = dr.TZOffsetTo
-		} else {
-			// At or after autumn transition, but before spring transition:
-			// Standard offset in effect.
-			// (localTime == standard → Standard, i.e. the new offset.)
-			offset = sr.TZOffsetTo
-		}
+		first, firstRule = standard, sr
+		second, secondRule = daylight, dr
 	}
+
+	var offset int
+	switch {
+	case localTime.Before(first):
+		// Before the first transition: the second transition's offset is
+		// still in effect from the previous cycle.
+		offset = secondRule.TZOffsetTo
+	case !localTime.Before(second):
+		// At or after the second transition: the second transition's offset
+		// is in effect for the rest of the year.
+		offset = secondRule.TZOffsetTo
+	default:
+		// Between the two transitions: the first transition's offset is
+		// in effect.
+		offset = firstRule.TZOffsetTo
+	}
+
 	// Apply the offset to convert local time to UTC.
 	return localTime.Add(-time.Duration(offset) * time.Second), nil
 }
@@ -290,36 +298,44 @@ func nthWeekday(year int, month time.Month, byDay string) (int, error) {
 // an ordinal (positive or negative) and a time.Weekday.
 // If no ordinal is present (e.g., "SU"), it returns 0 for the ordinal,
 // which will be rejected as an error by the caller inside VTIMEZONE context.
+//
+// Error convention: on any error, both the ordinal and weekday are returned
+// as their zero values (0 and time.Sunday respectively). Callers MUST check
+// err first and disregard the returned values when err != nil; the zero
+// values are placeholders, not meaningful results.
 func parseByDay(byDay string) (int, time.Weekday, error) {
-	// Safeguard against out-of-bounds access: Check whether the string is long enough.
-	// Since a day of the week always consists of at least 2 characters (e.g., "SU"),
-	// anything shorter than that is definitely invalid.
-	if len(byDay) < 2 {
-		return 0, -1, tserr.InvalidFormat(fmt.Sprintf("invalid BYDAY value: %s", byDay))
-	}
-	// The last two characters are always the weekday abbreviation.
-	wa := byDay[len(byDay)-2:]
-	// Parse the weekday abbreviation.
-	wd, err := parseWeekday(wa)
-	// If there is an error parsing the weekday, return zero and the error.
-	if err != nil {
-		return 0, -1, err
-	}
-	// If the BYDAY value is only two characters, there is no ordinal prefix.
-	if len(byDay) == 2 {
-		return 0, wd, nil
-	}
-	// Extract the ordinal prefix (e.g., "2" from "2SU", "-1" from "-1SU").
-	op := byDay[:len(byDay)-2]
-	// Parse the ordinal prefix (e.g., "2" from "2SU", "-1" from "-1SU").
-	ordinal, err := strconv.Atoi(op)
-	// If there is an error parsing the ordinal, return zero and the error.
-	if err != nil {
-		// If parsing fails, return zero, the weekday and the error.
-		return 0, wd, tserr.InvalidFormat(fmt.Sprintf("invalid ordinal prefix: %s in BYDAY %s", op, byDay))
-	}
-	// Return the parsed ordinal and weekday.
-	return ordinal, wd, nil
+    // Safeguard against out-of-bounds access: Check whether the string is long enough.
+    // Since a day of the week always consists of at least 2 characters (e.g., "SU"),
+    // anything shorter than that is definitely invalid.
+    if len(byDay) < 2 {
+        return 0, 0, tserr.InvalidFormat(fmt.Sprintf("invalid BYDAY value: %s", byDay))
+    }
+    // The last two characters are always the weekday abbreviation.
+    wa := byDay[len(byDay)-2:]
+    // Parse the weekday abbreviation.
+    wd, err := parseWeekday(wa)
+    // If there is an error parsing the weekday, return zero values and the error.
+    if err != nil {
+        return 0, 0, err
+    }
+    // If the BYDAY value is only two characters, there is no ordinal prefix.
+    if len(byDay) == 2 {
+        return 0, wd, nil
+    }
+    // Extract the ordinal prefix (e.g., "2" from "2SU", "-1" from "-1SU").
+    op := byDay[:len(byDay)-2]
+    // Parse the ordinal prefix (e.g., "2" from "2SU", "-1" from "-1SU").
+    ordinal, err := strconv.Atoi(op)
+    // If there is an error parsing the ordinal, return zero for the ordinal,
+    // the successfully-parsed weekday, and the error. The weekday is valid
+    // here (it parsed above), so returning it is accurate; only the ordinal
+    // failed. This lets a hypothetical caller that only needs the weekday
+    // recover it, while callers needing the ordinal must check err.
+    if err != nil {
+        return 0, wd, tserr.InvalidFormat(fmt.Sprintf("invalid ordinal prefix: %s in BYDAY %s", op, byDay))
+    }
+    // Return the parsed ordinal and weekday.
+    return ordinal, wd, nil
 }
 
 // parseWeekday parses a string representing a weekday and returns the corresponding time.Weekday.
