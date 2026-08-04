@@ -5,7 +5,7 @@ package tsicsparser
 
 // Package tsicsparser provides functions for parsing ICS files.
 import (
-	"fmt" // For formatting error messages.
+	"fmt"     // For formatting error messages.
 	"strings" // For splitting strings.
 	"time"    // For time operations.
 
@@ -26,8 +26,17 @@ type Event struct {
 func parseEvent(scanner *ICSScanner, timezone Timezone) (Event, error) {
 	// Initialize an Event struct to hold the parsed event information.
 	var event Event
-	// Initialize a pointer to a time.Duration to hold the pending duration if DTSTART hasn't been seen yet.
-	var pendingDuration *time.Duration
+	// pendingDuration holds a DURATION seen before DTSTART. A value-plus-flag
+	// pair is used instead of *time.Duration to avoid a heap allocation:
+	// time.Duration is a value type, and "set or not" semantics for a scalar
+	// are expressed idiomatically in Go with an accompanying bool.
+	// hasDuration is the authoritative "is it set?" indicator;
+	// pendingDuration itself is only meaningful when hasDuration is true.
+	var (
+		pendingDuration time.Duration
+		hasDuration     bool
+		endSetByEnd     bool // true if event.End was set by DTEND (not DURATION)
+	)
 	// Loop through the lines of the scanner until END:VEVENT is encountered.
 	for scanner.Scan() {
 		// Read the next line from the scanner.
@@ -64,7 +73,7 @@ func parseEvent(scanner *ICSScanner, timezone Timezone) (Event, error) {
 					if !event.End.IsZero() {
 						return Event{}, tserr.InvalidFormat("DTEND present without DTSTART in VEVENT")
 					}
-					if pendingDuration != nil {
+					if hasDuration {
 						return Event{}, tserr.InvalidFormat("DURATION present without DTSTART in VEVENT")
 					}
 					// No DTSTART at all — also an error.
@@ -91,7 +100,7 @@ func parseEvent(scanner *ICSScanner, timezone Timezone) (Event, error) {
 			switch keyBase {
 			// If the key base is "DTSTART", parse the datetime and timezone ID.
 			case "DTSTART":
-				// DTSTART acan only be used once per event. If it is already set, return an error.
+				// DTSTART can only be used once per event. If it is already set, return an error.
 				if !event.Start.IsZero() {
 					return Event{}, tserr.InvalidFormat("DTSTART already set")
 				}
@@ -100,24 +109,30 @@ func parseEvent(scanner *ICSScanner, timezone Timezone) (Event, error) {
 					return Event{}, err
 				}
 				// If a DURATION was seen before DTSTART, compute End now that Start is known.
-				if pendingDuration != nil {
-					event.End = event.Start.Add(*pendingDuration)
-					pendingDuration = nil
+				if hasDuration {
+					event.End = event.Start.Add(pendingDuration)
+					hasDuration = false
 				}
 			case "DTEND":
-				// DTEND and DURATION can only be used once per event as well as DTEND and DURATION are mutually exclusive.
-				// If it is already set, return an error.
-				if !event.End.IsZero() {
-					return Event{}, tserr.InvalidFormat("DTEND already set or DURATION already set; DTEND and DURATION are mutually exclusive")
+				// DTEND can only be used once per event. This is a dedicated
+				// duplicate check, distinct from the DURATION mutual-exclusivity
+				// check below, so the error message identifies the actual problem.
+				// Note: event.End may already be set by a prior DTEND (caught here)
+				// or by a DURATION (caught by the hasDuration check below). We
+				// distinguish the two cases to give an actionable error.
+				if endSetByEnd {
+					return Event{}, tserr.InvalidFormat("DTEND already set; duplicate DTEND in VEVENT")
 				}
-				// DTEND and DURATION are mutually exclusive per RFC 5545 §3.6.1
-				if pendingDuration != nil {
+				// DTEND and DURATION are mutually exclusive per RFC 5545 §3.6.1.
+				// A pending DURATION (seen before DTSTART) counts as "DURATION set".
+				if !event.End.IsZero() || hasDuration {
 					return Event{}, tserr.InvalidFormat("DTEND and DURATION are mutually exclusive")
 				}
 				// Parse the DTEND value into a UTC time.Time, handling both UTC-suffixed and TZID-qualified local times.
 				if event.End, err = parseDTValue(parts.Value, params, timezone, "DTEND"); err != nil {
 					return Event{}, err
 				}
+				endSetByEnd = true
 			case "DURATION":
 				// DTEND and DURATION can only be used once per event as well as DTEND and DURATION are mutually exclusive.
 				// If it is already set, return an error.
@@ -125,7 +140,7 @@ func parseEvent(scanner *ICSScanner, timezone Timezone) (Event, error) {
 					return Event{}, tserr.InvalidFormat("DTEND already set or DURATION already set; DTEND and DURATION are mutually exclusive")
 				}
 				// DURATION already set
-				if pendingDuration != nil {
+				if hasDuration {
 					return Event{}, tserr.InvalidFormat("DURATION already set")
 				}
 				// Parse the duration string into a time.Duration.
@@ -140,7 +155,8 @@ func parseEvent(scanner *ICSScanner, timezone Timezone) (Event, error) {
 					event.End = event.Start.Add(dur)
 				} else {
 					// DTSTART hasn't been seen yet. Store the duration temporarily.
-					pendingDuration = &dur
+					pendingDuration = dur
+					hasDuration = true
 				}
 			}
 		}
