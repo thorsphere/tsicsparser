@@ -13,5 +13,7 @@ var (
 	SplitKeyParams = splitKeyParams
 	TransitionTime = transitionTime
 	ConvertToUTC   = convertToUTC
+	ParseDuration  = parseDuration
+	ParseDTValue   = parseDTValue
 	ParseEvent     = parseEvent
 )
