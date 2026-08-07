@@ -16,4 +16,5 @@ var (
 	ParseDuration  = parseDuration
 	ParseDTValue   = parseDTValue
 	ParseEvent     = parseEvent
+	ParseCalendar  = parseCalendar
 )

@@ -35,11 +35,23 @@ type keyValue struct {
 	Value string // The value of the key-value pair.
 }
 
+// parseCalendar parses a VCALENDAR component from the scanner.
+//
+// Parsing is two-pass to remove an ordering dependency that RFC 5545 does
+// not impose: a VEVENT may reference a TZID whose VTIMEZONE appears later
+// in the stream. Because the ICSScanner is forward-only, VEVENT blocks
+// are buffered as raw lines during the first pass (alongside immediate
+// parsing of VTIMEZONE blocks) and only handed to parseEvent in the
+// second pass, once every VTIMEZONE has been collected into cal.Timezone.
 func parseCalendar(scanner *ICSScanner) (*Calendar, error) {
 	// Create a new Calendar struct to hold the parsed calendar information.
 	var cal Calendar
 	// Initialize a flag to indicate whether we have started parsing the calendar.
 	calStarted := false
+	// rawEvents holds the raw line slices of each VEVENT block seen
+	// during pass 1 (the lines between BEGIN:VEVENT and END:VEVENT,
+	// exclusive). They are parsed in pass 2 via parseBufferedEvents.
+	var rawEvents [][]string
 	// Scan through the input stream to read the calendar header information.
 	for scanner.Scan() {
 		// Read the current line from the scanner.
@@ -90,14 +102,16 @@ func parseCalendar(scanner *ICSScanner) (*Calendar, error) {
 		case "BEGIN": // If the key is "BEGIN", we need to handle the beginning of a new component.
 			switch parts.Value {
 			case "VEVENT": // If the value is "VEVENT", we are starting a new event component.
-				// Call the parseEvent function to parse the event component and add it to the Calendar struct.
-				event, err := parseEvent(scanner, cal.Timezone)
+				// Pass 1: do not parse yet — buffer the raw lines so the
+				// event can be resolved against cal.Timezone in pass 2
+				// regardless of where its VTIMEZONE appears in the stream.
+				raw, err := collectRawBlock(scanner, "VEVENT")
 				// If there is an error while parsing the event, return the error.
 				if err != nil {
 					return nil, err
 				}
-				// Append the parsed event to the Events slice in the Calendar struct.
-				cal.Events = append(cal.Events, event)
+				// Append the raw lines of the event component to the rawEvents slice for later parsing.
+				rawEvents = append(rawEvents, raw)
 			case "VTIMEZONE": // If the value is "VTIMEZONE", we are starting a new timezone component.
 				// Call the parseTimezone function to parse the timezone component and add it to the Calendar struct.
 				timezone, err := parseTimezone(scanner)
@@ -117,8 +131,15 @@ func parseCalendar(scanner *ICSScanner) (*Calendar, error) {
 			case "VTIMEZONE": // If the value is "VTIMEZONE", we have reached the end of a timezone component.
 				return nil, tserr.InvalidFormat("Unexpected END:VTIMEZONE without matching BEGIN:VTIMEZONE")
 			case "VCALENDAR": // If the value is "VCALENDAR", we have reached the end of the calendar component.
+				// Pass 2: all VTIMEZONE blocks have been collected. Parse the buffered VEVENT blocks now.
+				if err := parseBufferedEvents(&cal, rawEvents); err != nil {
+					// If there is an error while parsing the buffered events, return the error.
+					return nil, err
+				}
+				// Return the parsed Calendar struct and nil error to indicate successful parsing.
 				return &cal, nil
 			default:
+				// If we encounter an unexpected END key, return an error indicating invalid format.
 				return nil, tserr.InvalidFormat("Unexpected END:" + parts.Value)
 			}
 		default:
@@ -130,9 +151,90 @@ func parseCalendar(scanner *ICSScanner) (*Calendar, error) {
 	if !calStarted {
 		return nil, tserr.NotFound("BEGIN:VCALENDAR")
 	}
+	// EOF without END:VCALENDAR. Parse buffered events first so any
+	// event-level error surfaces before the missing-close error.
+	if err := parseBufferedEvents(&cal, rawEvents); err != nil {
+		return nil, err
+	}
 	// If we reach here, it means we have reached the end of the input stream
 	// without finding the "END:VCALENDAR" keyword.
 	return nil, tserr.InvalidFormat("Unexpected end of input while parsing calendar")
+}
+
+// collectRawBlock reads lines from scanner until the matching END:<block>
+// line, returning the raw lines in between (the caller has already
+// consumed BEGIN:<block>). It mirrors the line-handling skeleton of
+// parseEvent — skipping empty lines, propagating splitKeyValue errors,
+// and rejecting any END:<other> as "unexpected END inside <block>" — so
+// that structural errors are detected during pass 1 at the same point
+// parseEvent would have detected them, while leaving DTSTART/DTEND/
+// DURATION resolution to pass 2. Returns tserr.NotFound("END:<block>")
+// if the stream ends before the close, matching parseEvent.
+func collectRawBlock(scanner *ICSScanner, block string) ([]string, error) {
+	// Initialize a slice to hold the raw lines of the block.
+	var lines []string
+	// Scan through the input stream to read the lines of the block until we find the matching END:<block> line.
+	for scanner.Scan() {
+		// Read the current line from the scanner.
+		line := scanner.Text()
+		// Ignore empty lines.
+		if len(line) == 0 {
+			continue
+		}
+		// Split the line into key-value pairs based on the first colon.
+		parts, err := splitKeyValue(line)
+		// If there is an error while splitting the line, return the error.
+		if err != nil {
+			return nil, err
+		}
+		// If we encounter the matching END:<block> line, return the collected lines and nil error.
+		if parts.Key == "END" {
+			// If the END key matches the expected block, return the collected lines and nil error.
+			if parts.Value == block {
+				return lines, nil
+			}
+			// If we encounter an unexpected END key, return an error indicating invalid format.
+			return nil, tserr.InvalidFormat(fmt.Sprintf("unexpected END:%s inside %s", parts.Value, block))
+		}
+		// Append the current line to the lines slice to collect the raw lines of the block.
+		lines = append(lines, line)
+	}
+	// If we reach here, it means we have reached the end of the input stream
+	if err := scanner.Err(); err != nil {
+		// If there is an error while scanning the input stream, return the error.
+		return nil, err
+	}
+	// If we reach here, it means we have reached the end of the input stream
+	// without finding the matching "END:<block>" keyword.
+	return nil, tserr.NotFound("END:" + block)
+}
+
+// parseBufferedEvents is pass 2 of parseCalendar: it re-scans each raw
+// VEVENT block collected during pass 1 and hands it to parseEvent with
+// the fully-resolved calendar timezone. The raw lines are reconstructed
+// with a trailing END:VEVENT so parseEvent sees the same component close
+// it would have seen inline. The ICSScanner is forward-only, so each
+// block gets its own scanner over the reconstructed string; line folding
+// is a no-op on the second scanner because pass 1 already unfolded the
+// lines.
+func parseBufferedEvents(cal *Calendar, rawEvents [][]string) error {
+	// Iterate over each raw event block collected during pass 1.
+	for _, raw := range rawEvents {
+		// Reconstruct the raw event block by joining the lines with newline characters and appending "END:VEVENT" to indicate the end of the event component.
+		body := strings.Join(raw, "\n") + "\nEND:VEVENT"
+		// Create a new ICSScanner for the raw event block, specifying "VEVENT" as the component type.
+		s := NewICSScanner(strings.NewReader(body), "VEVENT")
+		// Parse the event using the parseEvent function, passing in the scanner and the calendar's timezone.
+		event, err := parseEvent(s, cal.Timezone)
+		// If there is an error while parsing the event, return the error.
+		if err != nil {
+			return err
+		}
+		// Append the parsed event to the Events slice in the Calendar struct.
+		cal.Events = append(cal.Events, event)
+	}
+	// If we reach here, it means all buffered events have been successfully parsed and added to the Calendar struct.
+	return nil
 }
 
 func parseProdID(value string) (ProdId, error) {
