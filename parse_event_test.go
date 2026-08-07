@@ -72,7 +72,6 @@ func TestParseEvent(t *testing.T) {
 	if err := s.Err(); err != nil {
 		t.Fatal(tserr.Op(&tserr.OpArgs{Op: "Scan", Fn: fn, Err: err}))
 	}
-	//tsfio.CreateGoldenFile(&tsfio.Testcase{Name: "events", Data: sb.String()})
 	// Evaluate the parsed timezone against the golden file to ensure correctness.
 	if err := tsfio.EvalGoldenFile(&tsfio.Testcase{Name: "events", Data: sb.String()}); err != nil {
 		t.Fatal(err)
@@ -342,6 +341,167 @@ func TestParseDTValueErr(t *testing.T) {
 			// Verify that an error is returned for the invalid input.
 			if err == nil {
 				t.Error(tserr.NilFailed("ParseDTValue"))
+			}
+		})
+	}
+}
+
+// TestParseEventErrors tests the parseEvent function with various malformed ICS
+// inputs to ensure that it correctly identifies and reports parsing errors. Each
+// test case is designed to trigger a specific error condition in parseEvent,
+// mirroring the approach used by TestParseTimezoneErrors for the timezone parser.
+func TestParseEventErr(t *testing.T) {
+	// Reuse a US-Eastern timezone so that TZID-mismatch cases can be exercised
+	// against a non-empty calendar timezone. Cases that do not reach the
+	// timezone-conversion logic leave tz as the zero value.
+	useEastern := tsicsparser.Timezone{
+		TZID: "US-Eastern",
+		Rules: []tsicsparser.TimezoneRule{
+			{
+				Type:         tsicsparser.Daylight,
+				TZOffsetFrom: -5 * 3600,
+				TZOffsetTo:   -4 * 3600,
+				DTStart:      time.Date(2025, time.March, 9, 2, 0, 0, 0, time.UTC),
+				RRule:        &tsicsparser.RRule{Freq: "YEARLY", ByMonth: int(time.March), ByDay: "2SU"},
+			},
+			{
+				Type:         tsicsparser.Standard,
+				TZOffsetFrom: -4 * 3600,
+				TZOffsetTo:   -5 * 3600,
+				DTStart:      time.Date(2025, time.November, 2, 2, 0, 0, 0, time.UTC),
+				RRule:        &tsicsparser.RRule{Freq: "YEARLY", ByMonth: int(time.November), ByDay: "1SU"},
+			},
+		},
+	}
+	// Define a set of test cases, each containing a name, an input string
+	// representing a malformed VEVENT in ICS format, and an optional timezone.
+	// The input always begins with BEGIN:VEVENT, which the caller consumes before
+	// invoking parseEvent; the test harness performs that one Scan() itself.
+	tests := []struct {
+		name  string
+		input string
+		tz    tsicsparser.Timezone
+	}{
+		// --- splitKeyValue / splitKeyParams errors ---
+		{
+			name:  "line without colon",
+			input: "BEGIN:VEVENT\nDTSTART:20250101T120000Z\nINVALIDLINE\nEND:VEVENT",
+		},
+		{
+			name:  "invalid parameter format",
+			input: "BEGIN:VEVENT\nDTSTART;INVALID:20250101T120000Z\nEND:VEVENT",
+		},
+
+		// --- DTSTART duplicate ---
+		{
+			name:  "DTSTART already set",
+			input: "BEGIN:VEVENT\nDTSTART:20250101T120000Z\nDTSTART:20250102T120000Z\nEND:VEVENT",
+		},
+
+		// --- DTEND duplicate ---
+		{
+			name:  "DTEND already set; duplicate DTEND",
+			input: "BEGIN:VEVENT\nDTSTART:20250101T120000Z\nDTEND:20250101T130000Z\nDTEND:20250101T140000Z\nEND:VEVENT",
+		},
+
+		// --- DTEND / DURATION mutual exclusivity ---
+		{
+			// DURATION (after DTSTART) sets End, then DTEND hits the
+			// mutual-exclusivity check on event.End.
+			name:  "DTEND and DURATION mutually exclusive (DURATION then DTEND)",
+			input: "BEGIN:VEVENT\nDTSTART:20250101T120000Z\nDURATION:PT1H\nDTEND:20250101T130000Z\nEND:VEVENT",
+		},
+		{
+			// DTEND sets End, then DURATION hits the mutual-exclusivity check
+			// on event.End.
+			name:  "DTEND and DURATION mutually exclusive (DTEND then DURATION)",
+			input: "BEGIN:VEVENT\nDTSTART:20250101T120000Z\nDTEND:20250101T130000Z\nDURATION:PT1H\nEND:VEVENT",
+		},
+		{
+			// A pending DURATION (seen before DTSTART) counts as "DURATION set"
+			// for the DTEND mutual-exclusivity check.
+			name:  "DTEND and DURATION mutually exclusive (pending DURATION then DTEND)",
+			input: "BEGIN:VEVENT\nDURATION:PT1H\nDTEND:20250101T130000Z\nEND:VEVENT",
+		},
+
+		// --- DURATION duplicate ---
+		{
+			// Two DURATIONs before DTSTART: the first is pending (End still
+			// zero), so the second hits the hasDuration check, not the
+			// event.End check.
+			name:  "DURATION already set",
+			input: "BEGIN:VEVENT\nDURATION:PT1H\nDURATION:PT2H\nEND:VEVENT",
+		},
+
+		// --- parseDTValue errors ---
+		{
+			name:  "invalid DTSTART datetime",
+			input: "BEGIN:VEVENT\nDTSTART:bad\nEND:VEVENT",
+		},
+		{
+			name:  "invalid DTEND datetime",
+			input: "BEGIN:VEVENT\nDTSTART:20250101T120000Z\nDTEND:bad\nEND:VEVENT",
+		},
+		{
+			// No Zulu suffix and no TZID parameter: a floating time.
+			name:  "floating time without TZID",
+			input: "BEGIN:VEVENT\nDTSTART:20250101T120000\nEND:VEVENT",
+		},
+		{
+			// TZID present but does not match the calendar's TZID.
+			name:  "TZID mismatch",
+			input: "BEGIN:VEVENT\nDTSTART;TZID=Europe/London:20250101T120000\nEND:VEVENT",
+			tz:    useEastern,
+		},
+
+		// --- parseDuration error ---
+		{
+			name:  "invalid DURATION",
+			input: "BEGIN:VEVENT\nDTSTART:20250101T120000Z\nDURATION:bad\nEND:VEVENT",
+		},
+
+		// --- unexpected END inside VEVENT ---
+		{
+			name:  "unexpected END inside VEVENT",
+			input: "BEGIN:VEVENT\nDTSTART:20250101T120000Z\nEND:VALARM\nEND:VEVENT",
+		},
+
+		// --- END:VEVENT validation errors ---
+		{
+			// No DTSTART, no DTEND, no DURATION.
+			name:  "missing required DTSTART",
+			input: "BEGIN:VEVENT\nSUMMARY:Test\nEND:VEVENT",
+		},
+		{
+			// DTEND present but DTSTART absent.
+			name:  "DTEND present without DTSTART",
+			input: "BEGIN:VEVENT\nDTEND:20250101T120000Z\nEND:VEVENT",
+		},
+		{
+			// DURATION present but DTSTART absent (pending, never resolved).
+			name:  "DURATION present without DTSTART",
+			input: "BEGIN:VEVENT\nDURATION:PT1H\nEND:VEVENT",
+		},
+
+		// --- EOF before END:VEVENT ---
+		{
+			name:  "missing END:VEVENT",
+			input: "BEGIN:VEVENT\nDTSTART:20250101T120000Z",
+		},
+	}
+
+	// Iterate over each test case and run it as a subtest.
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a new ICSScanner with the test input string.
+			s := tsicsparser.NewICSScanner(strings.NewReader(tt.input), "test")
+			// Consume the BEGIN:VEVENT line, mirroring how the calendar
+			// parser hands the scanner to parseEvent after spotting BEGIN.
+			s.Scan()
+			// Call ParseEvent and verify that an error is returned.
+			_, err := tsicsparser.ParseEvent(s, tt.tz)
+			if err == nil {
+				t.Fatal(tserr.NilFailed(tt.name))
 			}
 		})
 	}
