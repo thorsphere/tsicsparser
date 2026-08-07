@@ -5,7 +5,6 @@ package tsicsparser
 
 // This file contains functions to parse VTIMEZONE components from ICS files.
 import (
-	// For reading lines from the ICS input stream
 	"fmt"     // For formatting error messages
 	"strconv" // For converting string representations of numbers to integers
 	"strings" // For string manipulation functions like Split and SplitN
