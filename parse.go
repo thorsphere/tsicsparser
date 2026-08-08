@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/thorsphere/tserr"
+	"github.com/thorsphere/tstable"
 )
 
 // Calendar represents a calendar with events.
@@ -274,4 +275,52 @@ func splitKeyValue(line string) (*keyValue, error) {
 	value := parts[1]
 	// Return a new keyValue struct containing the extracted key and value.
 	return &keyValue{Key: key, Value: value}, nil
+}
+
+// String returns a formatted table representation of the product identifier.
+func (prodID ProdId) String() string {
+	// Create a new table with the specified column headers for the product identifier.
+	tbl, err := tstable.New([]string{"ProdID", "Value"})
+	// If there is an error while creating the table, return an error message indicating the issue.
+	if err != nil {
+		return fmt.Sprintf("<error creating table: %v>", err)
+	}
+	// Add rows to the table for each field of the product identifier.
+	tbl.AddRow([]string{"Registered", fmt.Sprintf("%t", prodID.Registered)})
+	tbl.AddRow([]string{"Organisation", prodID.Organisation})
+	tbl.AddRow([]string{"Product", prodID.Product})
+	tbl.AddRow([]string{"Language", prodID.Language})
+	// Return the string representation of the table.
+	return tbl.String()
+}
+
+// String returns a formatted table representation of the calendar,
+// including its product identifier, timezone, and events.
+// It provides a human-readable representation of the calendar's structure and content.
+func (cal Calendar) String() string {
+	// Create a new strings.Builder to efficiently build the string representation of the calendar.
+	var sb strings.Builder
+	// Create a new table with the specified column headers for the calendar.
+	tbl, err := tstable.New([]string{"Calendar", "VCALENDAR"})
+	// If there is an error while creating the table, return an error message indicating the issue.
+	if err != nil {
+		return fmt.Sprintf("<error creating table: %v>", err)
+	}
+	// Add rows to the table for each field of the calendar.
+	tbl.AddRow([]string{"Version", cal.Version})
+	tbl.AddRow([]string{"Calscale", cal.Calscale})
+	tbl.AddRow([]string{"Method", cal.Method})
+	tbl.AddRow([]string{"Summary", cal.Summary})
+	// Append the string representation of the calendar table to the string builder.
+	sb.WriteString(tbl.String())
+	// Append the string representation of the product identifier to the string builder.
+	sb.WriteString(cal.ProdId.String())
+	// Append the string representation of the timezone to the string builder.
+	sb.WriteString(cal.Timezone.String())
+	// Iterate over each event in the calendar and append its string representation to the string builder.
+	for _, event := range cal.Events {
+		sb.WriteString(event.String())
+	}
+	// Return the string representation of the calendar, including its product identifier, timezone, and events.
+	return sb.String()
 }

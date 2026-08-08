@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/thorsphere/tserr"
+	"github.com/thorsphere/tsfio"
 	"github.com/thorsphere/tsicsparser" // Import the tsicsparser package to test the parseTimezone function.
 )
 
@@ -126,5 +127,37 @@ func TestParseCalendarEventBeforeTimezone(t *testing.T) {
 	if !cal.Events[0].Start.Equal(want) {
 		// Report an error if the actual start time does not match the expected time.
 		t.Error(tserr.EqualStr(&tserr.EqualStrArgs{Var: "event start", Actual: cal.Events[0].Start.Format(time.RFC3339), Want: want.Format(time.RFC3339)}))
+	}
+}
+
+// TestParseCal tests the parsing of a calendar from an ICS file.
+// It reads the ICS file, parses the calendar data, and compares the output against a golden file
+// to ensure that the parsing is correct and consistent with expected results.
+func TestParseCal(t *testing.T) {
+	// Define the path to the ICS file that will be used for testing.
+	fn := "testdata/cal.ics"
+	// Open the ICS file for reading using the tsfio package, which provides file handling utilities.
+	f, e := tsfio.OpenFile(tsfio.Filename(fn))
+	// If there is an error opening the file, we report it and stop the test.
+	if e != nil {
+		t.Fatal(tserr.Op(&tserr.OpArgs{Op: "OpenFile", Fn: fn, Err: e}))
+	}
+	// Ensure the file is closed after the test completes to avoid resource leaks.
+	defer f.Close()
+	// Create a new ICSScanner to read from the opened file.
+	s := tsicsparser.NewICSScanner(f, fn)
+	// Call the ParseCalendar function to parse the calendar data from the scanner.
+	cal, err := tsicsparser.ParseCalendar(s)
+	// If there is an error during parsing, report it and stop the test.
+	if err != nil {
+		t.Fatal(tserr.Op(&tserr.OpArgs{Op: "ParseCalendar", Fn: fn, Err: err}))
+	}
+	// Check for any errors that occurred during scanning and report them.
+	if err := s.Err(); err != nil {
+		t.Fatal(tserr.Op(&tserr.OpArgs{Op: "Scan", Fn: fn, Err: err}))
+	}
+	// Evaluate the parsed timezone against the golden file to ensure correctness.
+	if err := tsfio.EvalGoldenFile(&tsfio.Testcase{Name: "cal", Data: cal.String()}); err != nil {
+		t.Fatal(err)
 	}
 }
