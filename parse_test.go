@@ -161,3 +161,39 @@ func TestParseCal(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestParseCalendarMissingProdID tests the parsing of a calendar that is missing the required PRODID field.
+// It verifies that the parser correctly identifies the missing field and returns an appropriate error.
+func TestParseCalendarMissingProdID(t *testing.T) {
+	// Define a sample calendar input string that is missing the required PRODID field.
+	input := "BEGIN:VCALENDAR\nVERSION:2.0\nEND:VCALENDAR"
+	// Create a new ICSScanner to read the input string.
+	s := tsicsparser.NewICSScanner(strings.NewReader(input), "test")
+	// Call the ParseCalendar function to parse the calendar input string.
+	_, err := tsicsparser.ParseCalendar(s)
+	// Check if the error is nil, indicating that the parser did not detect the missing PRODID field.
+	if err == nil {
+		// If the error is nil, it means that the parser did not detect the missing PRODID field,
+		// which is a required field in the iCalendar format.
+		// Therefore, we call t.Fatal to indicate that the test has failed and provide an appropriate error message.
+		t.Fatal(tserr.NilFailed("missing PRODID"))
+	}
+}
+
+// TestParseCalendarMissingVersion tests the parsing of a calendar that is missing the required VERSION field.
+// It verifies that the parser correctly identifies the missing field and returns an appropriate error.
+func TestParseCalendarMissingVersion(t *testing.T) {
+	// Define a sample calendar input string that is missing the required VERSION field.
+	input := "BEGIN:VCALENDAR\nPRODID:-//Thorsphere//tsicsparser//en\nEND:VCALENDAR"
+	// Create a new ICSScanner to read the input string.
+	s := tsicsparser.NewICSScanner(strings.NewReader(input), "test")
+	// Call the ParseCalendar function to parse the calendar input string.
+	_, err := tsicsparser.ParseCalendar(s)
+	// Check if the error is nil, indicating that the parser did not detect the missing VERSION field.
+	if err == nil {
+		// If the error is nil, it means that the parser did not detect the missing VERSION field,
+		// which is a required field in the iCalendar format.
+		// Therefore, we call t.Fatal to indicate that the test has failed and provide an appropriate error message.
+		t.Fatal(tserr.NilFailed("missing VERSION"))
+	}
+}

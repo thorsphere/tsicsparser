@@ -46,6 +46,43 @@ type Timezone struct {
 	Rules []TimezoneRule // List of rules for the timezone, including standard and daylight saving time rules
 }
 
+// Timezones is the set of VTIMEZONE components declared in a VCALENDAR.
+// RFC 5545 §3.6.5 permits multiple VTIMEZONE blocks per calendar; each
+// is keyed by its TZID. Lookup resolves the TZID referenced by a
+// DTSTART/DTEND parameter to the matching Timezone.
+type Timezones []Timezone
+
+// Lookup returns the Timezone whose TZID matches tzid, or ok=false if
+// no VTIMEZONE in the calendar declares that identifier. Matching is
+// case-sensitive and exact, consistent with RFC 5545 §3.2.20 (TZID is
+// a text parameter; no case-folding is defined by the spec).
+// It returns a tserr.NotFound error if the TZID is not found.
+func (tzs Timezones) Lookup(tzid string) (Timezone, error) {
+	// Iterate through the list of Timezones to find a matching TZID.
+    for i := range tzs {
+		// Check if the TZID of the current Timezone matches the requested tzid.
+        if tzs[i].TZID == tzid {
+			// If a matching TZID is found, return the corresponding Timezone and a nil error.
+            return tzs[i], nil
+        }
+    }
+	// If no matching TZID is found, return a tserr.NotFound error with a descriptive message.
+    return Timezone{}, tserr.NotFound(fmt.Sprintf("timezone not found: %s", tzid))
+}
+
+// String renders every VTIMEZONE in declaration order.
+func (tzs Timezones) String() string {
+	// Use a strings.Builder to efficiently build the output string.
+    var sb strings.Builder
+    // Iterate through the list of Timezones and append their string representations to the builder.
+	for i := range tzs {
+		// Append the string representation of the current Timezone to the builder.
+        sb.WriteString(tzs[i].String())
+    }
+    // Return the concatenated string representation of all Timezones.
+	return sb.String()
+}
+
 // parseTimezone parses a VTIMEZONE component from the scanner, consuming lines
 // until END:VTIMEZONE is reached. It handles both DAYLIGHT and STANDARD
 // sub-components including DTSTART, TZOFFSETFROM, TZOFFSETTO, TZNAME, and RRULE.

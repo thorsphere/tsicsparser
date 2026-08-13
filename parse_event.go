@@ -23,7 +23,7 @@ type Event struct {
 }
 
 // parseEvent parses an ICS event from the given scanner and returns an Event and an error if any.
-func parseEvent(scanner *ICSScanner, timezone Timezone) (Event, error) {
+func parseEvent(scanner *ICSScanner, tzs Timezones) (Event, error) {
 	// Initialize an Event struct to hold the parsed event information.
 	var event Event
 	// pendingDuration holds a DURATION seen before DTSTART. A value-plus-flag
@@ -105,7 +105,7 @@ func parseEvent(scanner *ICSScanner, timezone Timezone) (Event, error) {
 					return Event{}, tserr.InvalidFormat("DTSTART already set")
 				}
 				// Parse the DTSTART value into a UTC time.Time, handling both UTC-suffixed and TZID-qualified local times.
-				if event.Start, err = parseDTValue(parts.Value, params, timezone, "DTSTART"); err != nil {
+				if event.Start, err = parseDTValue(parts.Value, params, tzs, "DTSTART"); err != nil {
 					return Event{}, err
 				}
 				// If a DURATION was seen before DTSTART, compute End now that Start is known.
@@ -129,7 +129,7 @@ func parseEvent(scanner *ICSScanner, timezone Timezone) (Event, error) {
 					return Event{}, tserr.InvalidFormat("DTEND and DURATION are mutually exclusive")
 				}
 				// Parse the DTEND value into a UTC time.Time, handling both UTC-suffixed and TZID-qualified local times.
-				if event.End, err = parseDTValue(parts.Value, params, timezone, "DTEND"); err != nil {
+				if event.End, err = parseDTValue(parts.Value, params, tzs, "DTEND"); err != nil {
 					return Event{}, err
 				}
 				endSetByEnd = true
@@ -177,7 +177,7 @@ func parseEvent(scanner *ICSScanner, timezone Timezone) (Event, error) {
 //
 // propName ("DTSTART" or "DTEND") is used only to construct error messages
 // when the value is a floating time (no TZID and no Zulu suffix).
-func parseDTValue(value string, params map[string]string, tz Timezone, propName string) (time.Time, error) {
+func parseDTValue(value string, params map[string]string, tzs Timezones, propName string) (time.Time, error) {
 	// Parse the local datetime from the value.
 	localTime, isUTC, err := parseICSDateTime(value)
 	if err != nil {
@@ -194,6 +194,12 @@ func parseDTValue(value string, params map[string]string, tz Timezone, propName 
 			"floating time not supported: %s without TZID or Zulu suffix; "+
 				"floating times cannot be converted to UTC as required by this package",
 			propName))
+	}
+	// Look up the timezone by its TZID in the provided Timezones map.
+	tz, err := tzs.Lookup(tzid)
+	// If the timezone with the given TZID is not found, return an error.
+	if err != nil {
+		return time.Time{}, err
 	}
 	// Convert the local time to UTC using the timezone rules.
 	return convertToUTC(localTime, tzid, tz)

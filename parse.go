@@ -13,13 +13,13 @@ import (
 
 // Calendar represents a calendar with events.
 type Calendar struct {
-	ProdId   ProdId   // Prodid is the product identifier for the calendar.
-	Version  string   // Version is the version of the calendar format.
-	Calscale string   // Calscale is the calendar scale used (e.g., "GREGORIAN").
-	Method   string   // Method is the method used for the calendar (e.g., "PUBLISH").
-	Summary  string   // Summary is a brief description of the calendar.
-	Timezone Timezone // Timezone represents the timezone information for the calendar.
-	Events   []Event  // Events is a slice of Event structs representing the events in the calendar.
+	ProdId    ProdId    // Prodid is the product identifier for the calendar.
+	Version   string    // Version is the version of the calendar format.
+	Calscale  string    // Calscale is the calendar scale used (e.g., "GREGORIAN").
+	Method    string    // Method is the method used for the calendar (e.g., "PUBLISH").
+	Summary   string    // Summary is a brief description of the calendar.
+	Timezones Timezones // All VTIMEZONE components declared in the calendar.
+	Events    []Event   // Events is a slice of Event structs representing the events in the calendar.
 }
 
 // Prodid represents the product identifier for the calendar.
@@ -120,8 +120,8 @@ func parseCalendar(scanner *ICSScanner) (*Calendar, error) {
 				if err != nil {
 					return nil, err
 				}
-				// Set the Timezone field in the Calendar struct to the parsed timezone.
-				cal.Timezone = timezone
+				// Append the parsed timezone to the Timezones slice in the Calendar struct.
+				cal.Timezones = append(cal.Timezones, timezone)
 			default:
 				continue // Ignore other components.
 			}
@@ -135,6 +135,11 @@ func parseCalendar(scanner *ICSScanner) (*Calendar, error) {
 				// Pass 2: all VTIMEZONE blocks have been collected. Parse the buffered VEVENT blocks now.
 				if err := parseBufferedEvents(&cal, rawEvents); err != nil {
 					// If there is an error while parsing the buffered events, return the error.
+					return nil, err
+				}
+				// RFC 5545 §3.6: PRODID and VERSION are mandatory. Validate
+				// after all properties are collected, before returning.
+				if err := cal.validateRequiredFields(); err != nil {
 					return nil, err
 				}
 				// Return the parsed Calendar struct and nil error to indicate successful parsing.
@@ -155,6 +160,13 @@ func parseCalendar(scanner *ICSScanner) (*Calendar, error) {
 	// EOF without END:VCALENDAR. Parse buffered events first so any
 	// event-level error surfaces before the missing-close error.
 	if err := parseBufferedEvents(&cal, rawEvents); err != nil {
+		return nil, err
+	}
+	// Even on a truncated stream, surface the missing-required-field
+	// error if applicable — it is often the more actionable diagnosis
+	// than "Unexpected end of input", and it matches the END:VCALENDAR
+	// path's ordering (events first, then required-field check).
+	if err := cal.validateRequiredFields(); err != nil {
 		return nil, err
 	}
 	// If we reach here, it means we have reached the end of the input stream
@@ -226,7 +238,7 @@ func parseBufferedEvents(cal *Calendar, rawEvents [][]string) error {
 		// Create a new ICSScanner for the raw event block, specifying "VEVENT" as the component type.
 		s := NewICSScanner(strings.NewReader(body), "VEVENT")
 		// Parse the event using the parseEvent function, passing in the scanner and the calendar's timezone.
-		event, err := parseEvent(s, cal.Timezone)
+		event, err := parseEvent(s, cal.Timezones)
 		// If there is an error while parsing the event, return the error.
 		if err != nil {
 			return err
@@ -316,11 +328,36 @@ func (cal Calendar) String() string {
 	// Append the string representation of the product identifier to the string builder.
 	sb.WriteString(cal.ProdId.String())
 	// Append the string representation of the timezone to the string builder.
-	sb.WriteString(cal.Timezone.String())
+	sb.WriteString(cal.Timezones.String())
 	// Iterate over each event in the calendar and append its string representation to the string builder.
 	for _, event := range cal.Events {
 		sb.WriteString(event.String())
 	}
 	// Return the string representation of the calendar, including its product identifier, timezone, and events.
 	return sb.String()
+}
+
+// validateRequiredFields checks that the mandatory VCALENDAR properties
+// per RFC 5545 §3.6 are present. PRODID and VERSION are conformance
+// requirements: a calendar missing either is not a conformant iCalendar
+// object. The check is performed at the end of parsing (both the
+// END:VCALENDAR and EOF paths) so that ordering of the properties within
+// the stream does not matter — only their presence.
+func (cal Calendar) validateRequiredFields() error {
+	// PRODID is required. parseProdID rejects malformed values, but a
+	// calendar that never had a PRODID line leaves cal.ProdId as the
+	// zero value (Registered=false, all strings empty). Detect that by
+	// checking the Organisation field: a real PRODID always has a
+	// non-empty organisation component (the second "//"-delimited field),
+	// because parseProdID requires exactly four components.
+	if cal.ProdId.Organisation == "" && cal.ProdId.Product == "" && cal.ProdId.Language == "" {
+		return tserr.InvalidFormat("missing required PRODID in VCALENDAR")
+	}
+	// VERSION is required. RFC 5545 §3.6.9 does not mandate a specific
+	// value, only that the property be present, so an empty string is
+	// treated as "absent".
+	if cal.Version == "" {
+		return tserr.InvalidFormat("missing required VERSION in VCALENDAR")
+	}
+	return nil
 }
