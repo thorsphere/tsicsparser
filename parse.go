@@ -17,7 +17,7 @@ type Calendar struct {
 	Version   string    // Version is the version of the calendar format.
 	Calscale  string    // Calscale is the calendar scale used (e.g., "GREGORIAN").
 	Method    string    // Method is the method used for the calendar (e.g., "PUBLISH").
-	Summary   string    // Summary is a brief description of the calendar.
+	Name      string    // Name is the calendar display name (RFC 7986 NAME property).
 	Timezones Timezones // All VTIMEZONE components declared in the calendar.
 	Events    []Event   // Events is a slice of Event structs representing the events in the calendar.
 }
@@ -98,8 +98,19 @@ func parseCalendar(scanner *ICSScanner) (*Calendar, error) {
 			cal.Calscale = parts.Value
 		case "METHOD": // If the key is "METHOD", set the Method field in the Calendar struct.
 			cal.Method = parts.Value
-		case "SUMMARY": // If the key is "SUMMARY", set the Summary field in the Calendar struct.
-			cal.Summary = parts.Value
+		case "NAME": // RFC 7986 calendar display name; the standard
+			// calendar-level descriptive property. Takes precedence over
+			// the non-conformant SUMMARY alias handled below.
+			cal.Name = parts.Value
+		case "SUMMARY": // Non-conformant at VCALENDAR level: SUMMARY is a
+			// component property (VEVENT/VTODO/etc.) per RFC 5545, not a
+			// calendar property. Some real-world calendars place it at the VCALENDAR level
+			// anyway. Tolerate it by populating Name, but only if the
+			// standard NAME property has not already been set, so a
+			// conformant NAME always wins over the legacy SUMMARY.
+			if cal.Name == "" {
+				cal.Name = parts.Value
+			}
 		case "BEGIN": // If the key is "BEGIN", we need to handle the beginning of a new component.
 			switch parts.Value {
 			case "VEVENT": // If the value is "VEVENT", we are starting a new event component.
@@ -123,7 +134,15 @@ func parseCalendar(scanner *ICSScanner) (*Calendar, error) {
 				// Append the parsed timezone to the Timezones slice in the Calendar struct.
 				cal.Timezones = append(cal.Timezones, timezone)
 			default:
-				continue // Ignore other components.
+				// Skip proprietary X- prefixed properties
+				// (e.g. X-WR-CALNAME, X-WR-TIMEZONE) rather than silently
+				// dropping them. RFC 5545 §3.1 reserves the "X-" prefix for
+				// non-standard, experimental properties; this package does
+				// not parse proprietary extensions, so skip them silently.
+				if strings.HasPrefix(parts.Key, "X-") {
+					continue // Ignore X- keys.
+				}
+				continue // Ignore other unknown standard keys.
 			}
 		case "END": // If the key is "END", we need to handle the end of a component.
 			switch parts.Value {
@@ -322,7 +341,7 @@ func (cal Calendar) String() string {
 	tbl.AddRow([]string{"Version", cal.Version})
 	tbl.AddRow([]string{"Calscale", cal.Calscale})
 	tbl.AddRow([]string{"Method", cal.Method})
-	tbl.AddRow([]string{"Summary", cal.Summary})
+	tbl.AddRow([]string{"Name", cal.Name})
 	// Append the string representation of the calendar table to the string builder.
 	sb.WriteString(tbl.String())
 	// Append the string representation of the product identifier to the string builder.
