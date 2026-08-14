@@ -21,7 +21,7 @@ import (
 // It ensures that the parser correctly extracts event data and produces the expected output.
 func TestParseEvent(t *testing.T) {
 	// Define the path to the ICS file that will be used for testing.
-	fn := "testdata/events.ics"
+	fn := "testdata/cal.ics"
 	// Open the ICS file for reading using the tsfio package, which provides file handling utilities.
 	f, e := tsfio.OpenFile(tsfio.Filename(fn))
 	// If there is an error opening the file, we report it and stop the test.
@@ -75,7 +75,7 @@ func TestParseEvent(t *testing.T) {
 		t.Fatal(tserr.Op(&tserr.OpArgs{Op: "Scan", Fn: fn, Err: err}))
 	}
 	// Evaluate the parsed timezone against the golden file to ensure correctness.
-	if err := tsfio.EvalGoldenFile(&tsfio.Testcase{Name: "events", Data: sb.String()}); err != nil {
+	if err := tsfio.EvalGoldenFile(&tsfio.Testcase{Name: "event", Data: sb.String()}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -212,7 +212,7 @@ func TestParseDTValue(t *testing.T) {
 		name   string
 		value  string
 		params map[string]string
-		tzs     tsicsparser.Timezones
+		tzs    tsicsparser.Timezones
 		prop   string
 		want   time.Time
 	}{
@@ -221,7 +221,7 @@ func TestParseDTValue(t *testing.T) {
 			name:   "zulu datetime",
 			value:  "20250101T120000Z",
 			params: map[string]string{},
-			tzs:     tsicsparser.Timezones{useEastern},
+			tzs:    tsicsparser.Timezones{useEastern},
 			prop:   "DTSTART",
 			want:   time.Date(2025, time.January, 1, 12, 0, 0, 0, time.UTC),
 		},
@@ -231,7 +231,7 @@ func TestParseDTValue(t *testing.T) {
 			name:   "TZID local time in standard period",
 			value:  "20250102T100000",
 			params: map[string]string{"TZID": "US-Eastern"},
-			tzs:     tsicsparser.Timezones{useEastern},
+			tzs:    tsicsparser.Timezones{useEastern},
 			prop:   "DTSTART",
 			want:   time.Date(2025, time.January, 2, 15, 0, 0, 0, time.UTC),
 		},
@@ -241,7 +241,7 @@ func TestParseDTValue(t *testing.T) {
 			name:   "TZID local time in daylight period",
 			value:  "20250704T100000",
 			params: map[string]string{"TZID": "US-Eastern"},
-			tzs:     tsicsparser.Timezones{useEastern},
+			tzs:    tsicsparser.Timezones{useEastern},
 			prop:   "DTEND",
 			want:   time.Date(2025, time.July, 4, 14, 0, 0, 0, time.UTC),
 		},
@@ -251,7 +251,7 @@ func TestParseDTValue(t *testing.T) {
 			name:   "TZID local time with bare value (quotes already stripped)",
 			value:  "20250102T100000",
 			params: map[string]string{"TZID": "US-Eastern"},
-			tzs:     tsicsparser.Timezones{useEastern},
+			tzs:    tsicsparser.Timezones{useEastern},
 			prop:   "DTSTART",
 			want:   time.Date(2025, time.January, 2, 15, 0, 0, 0, time.UTC),
 		},
@@ -307,7 +307,7 @@ func TestParseDTValueErr(t *testing.T) {
 		name   string
 		value  string
 		params map[string]string
-		tzs     tsicsparser.Timezones
+		tzs    tsicsparser.Timezones
 		prop   string
 	}{
 		{
@@ -315,7 +315,7 @@ func TestParseDTValueErr(t *testing.T) {
 			name:   "invalid datetime format",
 			value:  "not-a-date",
 			params: map[string]string{},
-			tzs:     tsicsparser.Timezones{useEastern},
+			tzs:    tsicsparser.Timezones{useEastern},
 			prop:   "DTSTART",
 		},
 		{
@@ -323,7 +323,7 @@ func TestParseDTValueErr(t *testing.T) {
 			name:   "floating time without TZID",
 			value:  "20250101T120000",
 			params: map[string]string{},
-			tzs:     tsicsparser.Timezones{useEastern},
+			tzs:    tsicsparser.Timezones{useEastern},
 			prop:   "DTSTART",
 		},
 		{
@@ -331,7 +331,7 @@ func TestParseDTValueErr(t *testing.T) {
 			name:   "TZID mismatch",
 			value:  "20250101T120000",
 			params: map[string]string{"TZID": "Europe/London"},
-			tzs:     tsicsparser.Timezones{useEastern},
+			tzs:    tsicsparser.Timezones{useEastern},
 			prop:   "DTSTART",
 		},
 	}
@@ -360,7 +360,7 @@ func TestParseEventErr(t *testing.T) {
 	tests := []struct {
 		name  string
 		input string
-		tzs    tsicsparser.Timezones
+		tzs   tsicsparser.Timezones
 	}{
 		// --- splitKeyValue / splitKeyParams errors ---
 		{
