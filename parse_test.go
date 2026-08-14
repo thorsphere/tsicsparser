@@ -3,13 +3,14 @@
 // (FSL-1.1-ALv2) that can be found in the LICENSE file.
 package tsicsparser_test
 
+// Import necessary packages for testing the tsicsparser package.
 import (
-	"strings"
-	"testing"
-	"time"
+	"strings" // Import the strings package to work with string manipulation functions.
+	"testing" // Import the testing package to write unit tests for the tsicsparser package.
+	"time"    // Import the time package to work with date and time values in the tests.
 
-	"github.com/thorsphere/tserr"
-	"github.com/thorsphere/tsfio"
+	"github.com/thorsphere/tserr"       // Import the tserr package to handle error reporting and formatting in the tests.
+	"github.com/thorsphere/tsfio"       // Import the tsfio package to handle file input/output operations in the tests.
 	"github.com/thorsphere/tsicsparser" // Import the tsicsparser package to test the parseTimezone function.
 )
 
@@ -195,5 +196,63 @@ func TestParseCalendarMissingVersion(t *testing.T) {
 		// which is a required field in the iCalendar format.
 		// Therefore, we call t.Fatal to indicate that the test has failed and provide an appropriate error message.
 		t.Fatal(tserr.NilFailed("missing VERSION"))
+	}
+}
+
+// TestParseCalendarName tests the parsing of a calendar with a NAME field.
+// It verifies that the parser correctly extracts the calendar name from the input string.
+func TestParseCalendarName(t *testing.T) {
+	// Define tests for different calendar name scenarios, including cases with NAME and SUMMARY fields.
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{ // Test case with a NAME field, expecting the calendar name to be "Standard Name".
+			name: "Standard Name",
+			input: "BEGIN:VCALENDAR\n" +
+				"VERSION:2.0\n" +
+				"PRODID:+//Thorsphere//tsicsparser//en\n" +
+				"NAME:Standard Name\n" +
+				"SUMMARY:Legacy Summary\n" +
+				"END:VCALENDAR",
+		},
+		{ // Test case with only a SUMMARY field, expecting the name to be derived from the SUMMARY.
+			name: "Legacy Summary",
+			input: "BEGIN:VCALENDAR\n" +
+				"VERSION:2.0\n" +
+				"PRODID:+//Thorsphere//tsicsparser//en\n" +
+				"SUMMARY:Legacy Summary\n" +
+				"END:VCALENDAR",
+		},
+		{ // Test case with no NAME or SUMMARY fields, expecting an empty name.
+			name: "",
+			input: "BEGIN:VCALENDAR\n" +
+				"VERSION:2.0\n" +
+				"PRODID:+//Thorsphere//tsicsparser//en\n" +
+				"X-WR-CALNAME:My Calendar\n" +
+				"END:VCALENDAR",
+		},
+	}
+	// Iterate over the test cases and run each one as a subtest.
+	for _, tt := range tests {
+		// Run each test case as a subtest to isolate failures and provide better reporting.
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a new ICSScanner to read the input string.
+			s := tsicsparser.NewICSScanner(strings.NewReader(tt.input), "test")
+			// Call the ParseCalendar function to parse the calendar input string.
+			cal, err := tsicsparser.ParseCalendar(s)
+			// If there is an error during parsing, report it and stop the test.
+			if err != nil {
+				// Report an error if there was an issue parsing the calendar.
+				t.Fatal(tserr.Op(&tserr.OpArgs{Op: "ParseCalendar", Err: err}))
+			}
+			// Check if the parsed calendar name matches the expected name for the test case.
+			if cal.Name != tt.name {
+				// Report an error if the actual calendar name does not match the expected name.
+				t.Fatal(tserr.EqualStr(&tserr.EqualStrArgs{
+					Var: "Name", Actual: cal.Name, Want: tt.name,
+				}))
+			}
+		})
 	}
 }
