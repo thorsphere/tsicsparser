@@ -5,7 +5,7 @@ package tsicsparser_test
 
 // Import necessary packages for testing and ICS parsing.
 import (
-	"strings"
+	"strings" // Import the strings package for string manipulation.
 	"testing" // Import the testing package for writing test cases.
 
 	"github.com/thorsphere/tserr"       // Import the tserr package for error handling.
@@ -18,7 +18,7 @@ import (
 // It ensures that the parser correctly extracts timezone data and produces the expected output.
 func TestParseTimezone(t *testing.T) {
 	// Define the path to the ICS file that will be used for testing.
-	fn := "testdata/timezone.ics"
+	fn := "testdata/cal.ics"
 	// Open the ICS file for reading using the tsfio package, which provides file handling utilities.
 	f, e := tsfio.OpenFile(tsfio.Filename(fn))
 	// If there is an error opening the file, we report it and stop the test.
