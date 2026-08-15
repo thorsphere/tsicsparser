@@ -113,6 +113,14 @@ func parseCalendar(scanner *ICSScanner) (*Calendar, error) {
 			}
 		case "BEGIN": // If the key is "BEGIN", we need to handle the beginning of a new component.
 			switch parts.Value {
+			case "VCALENDAR": // A second BEGIN:VCALENDAR while one is
+				// already open. RFC 5545 §3.6 does not permit nested or
+				// repeated VCALENDAR components; the outer calendar must
+				// be closed with END:VCALENDAR before another may begin.
+				// Reject rather than silently treating the rest of the
+				// stream as belonging to the first calendar.
+				return nil, tserr.InvalidFormat(
+					"Unexpected BEGIN:VCALENDAR; nested or repeated VCALENDAR is not permitted")
 			case "VEVENT": // If the value is "VEVENT", we are starting a new event component.
 				// Pass 1: do not parse yet — buffer the raw lines so the
 				// event can be resolved against cal.Timezone in pass 2
@@ -134,14 +142,6 @@ func parseCalendar(scanner *ICSScanner) (*Calendar, error) {
 				// Append the parsed timezone to the Timezones slice in the Calendar struct.
 				cal.Timezones = append(cal.Timezones, timezone)
 			default:
-				// Skip proprietary X- prefixed properties
-				// (e.g. X-WR-CALNAME, X-WR-TIMEZONE) rather than silently
-				// dropping them. RFC 5545 §3.1 reserves the "X-" prefix for
-				// non-standard, experimental properties; this package does
-				// not parse proprietary extensions, so skip them silently.
-				if strings.HasPrefix(parts.Key, "X-") {
-					continue // Ignore X- keys.
-				}
 				continue // Ignore other unknown standard keys.
 			}
 		case "END": // If the key is "END", we need to handle the end of a component.
@@ -168,6 +168,14 @@ func parseCalendar(scanner *ICSScanner) (*Calendar, error) {
 				return nil, tserr.InvalidFormat("Unexpected END:" + parts.Value)
 			}
 		default:
+			// Skip proprietary X- prefixed properties
+			// (e.g. X-WR-CALNAME, X-WR-TIMEZONE) rather than silently
+			// dropping them. RFC 5545 §3.1 reserves the "X-" prefix for
+			// non-standard, experimental properties; this package does
+			// not parse proprietary extensions, so skip them silently.
+			if strings.HasPrefix(parts.Key, "X-") {
+				continue // Ignore X- keys.
+			}
 			continue // Ignore other keys.
 		}
 	}

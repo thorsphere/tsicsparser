@@ -54,7 +54,7 @@ func TestParseProdId(t *testing.T) {
 // to ensure that it correctly returns errors for malformed input. It verifies that the parser
 // handles cases where the registered flag or product identifier format is incorrect.
 func TestParseProdIdErr(t *testing.T) {
-	// Define a set of test cases with invalid product identifier strings to test error handling.
+	// Define a set of test cases with invalid calendar input strings to test error handling.
 	tests := []struct {
 		name  string
 		input string
@@ -70,7 +70,51 @@ func TestParseProdIdErr(t *testing.T) {
 			_, err := tsicsparser.ParseProdId(tt.input)
 			// If there is an error during parsing, report it and stop the test.
 			if err == nil {
-				t.Fatal(tserr.NilFailed("parseProdID"))
+				t.Fatal(tserr.NilFailed(tt.name))
+			}
+		},
+		)
+	}
+}
+
+// TestParseCalendarErr tests the ParseCalendarErr function.
+// It defines a set of test cases with invalid calendar input strings
+// to ensure that it correctly returns errors for malformed input.
+func TestParseCalendarErr(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		// Tests the parsing of a calendar that is missing the required PRODID field.
+		// It verifies that the parser correctly identifies the missing field.
+		{name: "missing PRODID", input: "BEGIN:VCALENDAR\nVERSION:2.0\nEND:VCALENDAR"},
+		// Tests the parsing of a calendar that is missing the required VERSION field.
+		// It verifies that the parser correctly identifies the missing field.
+		{name: "missing VERSION", input: "BEGIN:VCALENDAR\nPRODID:-//Thorsphere//tsicsparser//en\nEND:VCALENDAR"},
+		// Tests that a second BEGIN:VCALENDAR appearing before the first END:VCALENDAR is rejected,
+		// rather than silently parsed as part of the outer calendar.
+		{name: "nested BEGIN:VCALENDAR should be rejected", input: "BEGIN:VCALENDAR\n" +
+			"VERSION:2.0\n" +
+			"PRODID:+//Thorsphere//tsicsparser//en\n" +
+			"BEGIN:VCALENDAR\n" +
+			"VERSION:2.0\n" +
+			"PRODID:+//Thorsphere//inner//en\n" +
+			"END:VCALENDAR\n" +
+			"END:VCALENDAR"},
+	}
+	// Iterate over the test cases and run each one as a subtest.
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+
+			// Create a new ICSScanner to read the input string.
+			s := tsicsparser.NewICSScanner(strings.NewReader(tt.input), "test")
+			// Call the ParseCalendar function to parse the calendar input string.
+			_, err := tsicsparser.ParseCalendar(s)
+			// Check if the error is nil, indicating that the parser did not detect the missing PRODID field.
+			if err == nil {
+				// If the error is nil, it means that the parser did not detect the error.
+				// Therefore, we call t.Fatal to indicate that the test has failed and provide an appropriate error message.
+				t.Fatal(tserr.NilFailed(tt.name))
 			}
 		},
 		)
@@ -160,42 +204,6 @@ func TestParseCal(t *testing.T) {
 	// Evaluate the parsed timezone against the golden file to ensure correctness.
 	if err := tsfio.EvalGoldenFile(&tsfio.Testcase{Name: "cal", Data: cal.String()}); err != nil {
 		t.Fatal(err)
-	}
-}
-
-// TestParseCalendarMissingProdID tests the parsing of a calendar that is missing the required PRODID field.
-// It verifies that the parser correctly identifies the missing field and returns an appropriate error.
-func TestParseCalendarMissingProdID(t *testing.T) {
-	// Define a sample calendar input string that is missing the required PRODID field.
-	input := "BEGIN:VCALENDAR\nVERSION:2.0\nEND:VCALENDAR"
-	// Create a new ICSScanner to read the input string.
-	s := tsicsparser.NewICSScanner(strings.NewReader(input), "test")
-	// Call the ParseCalendar function to parse the calendar input string.
-	_, err := tsicsparser.ParseCalendar(s)
-	// Check if the error is nil, indicating that the parser did not detect the missing PRODID field.
-	if err == nil {
-		// If the error is nil, it means that the parser did not detect the missing PRODID field,
-		// which is a required field in the iCalendar format.
-		// Therefore, we call t.Fatal to indicate that the test has failed and provide an appropriate error message.
-		t.Fatal(tserr.NilFailed("missing PRODID"))
-	}
-}
-
-// TestParseCalendarMissingVersion tests the parsing of a calendar that is missing the required VERSION field.
-// It verifies that the parser correctly identifies the missing field and returns an appropriate error.
-func TestParseCalendarMissingVersion(t *testing.T) {
-	// Define a sample calendar input string that is missing the required VERSION field.
-	input := "BEGIN:VCALENDAR\nPRODID:-//Thorsphere//tsicsparser//en\nEND:VCALENDAR"
-	// Create a new ICSScanner to read the input string.
-	s := tsicsparser.NewICSScanner(strings.NewReader(input), "test")
-	// Call the ParseCalendar function to parse the calendar input string.
-	_, err := tsicsparser.ParseCalendar(s)
-	// Check if the error is nil, indicating that the parser did not detect the missing VERSION field.
-	if err == nil {
-		// If the error is nil, it means that the parser did not detect the missing VERSION field,
-		// which is a required field in the iCalendar format.
-		// Therefore, we call t.Fatal to indicate that the test has failed and provide an appropriate error message.
-		t.Fatal(tserr.NilFailed("missing VERSION"))
 	}
 }
 
