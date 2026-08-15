@@ -142,7 +142,20 @@ func parseCalendar(scanner *ICSScanner) (*Calendar, error) {
 				// Append the parsed timezone to the Timezones slice in the Calendar struct.
 				cal.Timezones = append(cal.Timezones, timezone)
 			default:
-				continue // Ignore other unknown standard keys.
+				// Unknown sub-component (e.g. VTODO, VJOURNAL, VFREEBUSY).
+				// This package only extracts VEVENT and VTIMEZONE, but
+				// RFC 5545 calendars may legitimately contain other
+				// components. Consume the entire block — BEGIN through
+				// its matching END — so its body and close tag are
+				// skipped cleanly rather than being misparsed as
+				// calendar-level properties and then rejected as an
+				// unexpected END. collectRawBlock propagates structural
+				// errors (mismatched END, EOF) so a malformed sub-component
+				// still surfaces, but a well-formed one is silently ignored.
+				if _, err := collectRawBlock(scanner, parts.Value); err != nil {
+					return nil, err
+				}
+				continue
 			}
 		case "END": // If the key is "END", we need to handle the end of a component.
 			switch parts.Value {
@@ -179,6 +192,16 @@ func parseCalendar(scanner *ICSScanner) (*Calendar, error) {
 			continue // Ignore other keys.
 		}
 	}
+	// The scanner loop has exited. If it exited because of an I/O error
+	// or a line exceeding the scanner's buffer limit, scanner.Err()
+	// holds that error; surface it before any structural diagnosis so
+	// the caller sees the real cause rather than a misleading
+	// "Unexpected end of input". This mirrors parseEvent and
+	// parseTimezone, which both check scanner.Err() immediately after
+	// their scan loops.
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
 	// If we reach here and calStarted is false, it means we have reached the end of the input stream
 	// without finding the "BEGIN:VCALENDAR" keyword.
 	if !calStarted {
@@ -210,9 +233,21 @@ func parseCalendar(scanner *ICSScanner) (*Calendar, error) {
 // parseEvent would have detected them, while leaving DTSTART/DTEND/
 // DURATION resolution to pass 2. Returns tserr.NotFound("END:<block>")
 // if the stream ends before the close, matching parseEvent.
+//
+// Nested sub-components (e.g. VALARM inside VEVENT) are handled by
+// tracking a depth counter: a BEGIN:<sub> line increments depth, and
+// only an END:<block> at depth 0 closes the outer block. This ensures
+// the matching END of a nested component is consumed as part of the
+// raw lines rather than being rejected as "unexpected END", so that
+// pass 2 (parseEvent) sees the full nested structure and can skip it
+// via its own case "BEGIN" arm.
 func collectRawBlock(scanner *ICSScanner, block string) ([]string, error) {
 	// Initialize a slice to hold the raw lines of the block.
 	var lines []string
+	// depth tracks the nesting level of sub-components. depth 0 means
+	// we are directly inside <block>; depth > 0 means we are inside a
+	// nested BEGIN:<sub> that has not yet been closed.
+	depth := 0
 	// Scan through the input stream to read the lines of the block until we find the matching END:<block> line.
 	for scanner.Scan() {
 		// Read the current line from the scanner.
@@ -227,14 +262,32 @@ func collectRawBlock(scanner *ICSScanner, block string) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		// If we encounter the matching END:<block> line, return the collected lines and nil error.
+		// If we encounter an END line, check whether it closes the outer
+		// block or a nested sub-component.
 		if parts.Key == "END" {
-			// If the END key matches the expected block, return the collected lines and nil error.
+			if depth > 0 {
+				// We are inside a nested sub-component; this END closes
+				// one level of nesting. Decrement and append the line so
+				// the raw block preserves the full nested structure for
+				// pass 2.
+				depth--
+				lines = append(lines, line)
+				continue
+			}
+			// depth == 0: this END is at the outer block level.
 			if parts.Value == block {
+				// The matching close — return the collected lines.
 				return lines, nil
 			}
-			// If we encounter an unexpected END key, return an error indicating invalid format.
+			// An END:<other> at depth 0 with no matching BEGIN is a
+			// structural error, same as before.
 			return nil, tserr.InvalidFormat(fmt.Sprintf("unexpected END:%s inside %s", parts.Value, block))
+		}
+		// If we encounter a BEGIN line for a sub-component, increment
+		// the nesting depth so its matching END is consumed rather than
+		// rejected. The BEGIN line itself is appended to the raw lines.
+		if parts.Key == "BEGIN" {
+			depth++
 		}
 		// Append the current line to the lines slice to collect the raw lines of the block.
 		lines = append(lines, line)

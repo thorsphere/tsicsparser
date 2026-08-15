@@ -62,6 +62,21 @@ func parseEvent(scanner *ICSScanner, tzs Timezones) (Event, error) {
 		// Handle the LOCATION property, which specifies the event location.
 		case "LOCATION":
 			event.Location = parts.Value
+		// Handle the BEGIN of a nested component.
+		case "BEGIN":
+			// A nested sub-component inside VEVENT — most commonly
+			// VALARM (RFC 5545 §3.6.6), but this arm handles any. This
+			// package does not model alarms, so consume the entire block
+			// (BEGIN through its matching END) and discard it. Without
+			// this, the VALARM's body lines would be misparsed as
+			// event-level properties and its END:VALARM would hit the
+			// END switch's default arm, producing a spurious
+			// "unexpected END:VALARM inside VEVENT" error. collectRawBlock
+			// propagates structural errors (mismatched END, EOF) so a
+			// malformed nested block still surfaces.
+			if _, err := collectRawBlock(scanner, parts.Value); err != nil {
+				return Event{}, err
+			}
 		// Handle the END of the VEVENT component.
 		case "END":
 			switch parts.Value {
