@@ -18,3 +18,7 @@ var (
 	ParseEvent     = parseEvent
 	ParseCalendar  = parseCalendar
 )
+
+func (s *ICSScanner) ExportReadLine() (string, bool) {
+	return s.readLine()
+}

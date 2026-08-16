@@ -93,6 +93,23 @@ func TestTextNil(t *testing.T) {
 	}
 }
 
+// TestreadLineNil tests the behavior of the ICSScanner when it is nil.
+// It ensures that calling readLine on a nil ICSScanner returns an empty string and false, as expected.
+func TestReadLineNil(t *testing.T) {
+	// Test the behavior of the ICSScanner when it is nil.
+	var s *tsicsparser.ICSScanner
+	// Call readLine on a nil ICSScanner and check that it returns an empty string and false.
+	str, b := s.ExportReadLine()
+	// If str is not empty, the test has failed.
+	if str != "" {
+		t.Fatal(tserr.Return(&tserr.ReturnArgs{Op: "readLine", Actual: str, Want: ""}))
+	}
+	// If b is true, the test has failed.
+	if b {
+		t.Fatal(tserr.Return(&tserr.ReturnArgs{Op: "readLine", Actual: "true", Want: "false"}))
+	}
+}
+
 // TestErrNil tests the behavior of the ICSScanner when it is nil.
 // It ensures that calling Err on a nil ICSScanner returns an error, as expected.
 func TestErrNil(t *testing.T) {
@@ -122,6 +139,33 @@ func TestParseCalScannerErr(t *testing.T) {
 	}
 	// The error must be the I/O error, not the structural
 	// "Unexpected end of input while parsing calendar".
+	if !strings.Contains(err.Error(), "disk read failed") {
+		t.Fatalf("expected scanner I/O error, got: %v", err)
+	}
+}
+
+// TestParseEventScannerErr tests that an I/O error from the
+// scanner is surfaced by parseEvent, not masked by the
+// "NotFound END:VEVENT" structural error returned when the stream
+// ends before the component close.
+func TestParseEventScannerErr(t *testing.T) {
+	// A valid event header up to the point where the reader fails.
+	// BEGIN:VEVENT is consumed by the caller (mirroring parseCalendar),
+	// so the body starts at DTSTART.
+	head := "DTSTART:20250101T120000Z\nSUMMARY:Test\n"
+	// Create a new ICSScanner to read from a faulty reader.
+	s := tsicsparser.NewICSScanner(
+		&faultyReader{data: []byte(head), err: errors.New("disk read failed")},
+		"test")
+	// Call ParseEvent on the faulty scanner and check that it
+	// returns an error.
+	_, err := tsicsparser.ParseEvent(s, nil)
+	// If there is no error, the test has failed.
+	if err == nil {
+		t.Fatal(tserr.NilFailed("scanner I/O error should surface"))
+	}
+	// The error must be the I/O error, not the structural
+	// "NotFound END:VEVENT".
 	if !strings.Contains(err.Error(), "disk read failed") {
 		t.Fatalf("expected scanner I/O error, got: %v", err)
 	}
