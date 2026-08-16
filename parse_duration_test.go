@@ -55,17 +55,18 @@ func TestParseDuration(t *testing.T) {
 func TestParseDurationErr(t *testing.T) {
 	// Define invalid duration strings that should be rejected.
 	invalid := []string{
-		"",           // empty
-		"P",          // no components
-		"PT",         // no components
-		"-P",         // no components
-		"PD",         // no digits
-		"P1",         // no unit
-		"1H",         // missing 'P'
-		"PT1X",       // invalid unit
-		"P1H",        // 'H' before 'T'
-		"PT1D",       // 'D' in time section
-		"P99999999W", // overflow
+		"",                   // empty
+		"P",                  // no components
+		"PT",                 // no components
+		"-P",                 // no components
+		"PD",                 // no digits
+		"P1",                 // no unit
+		"1H",                 // missing 'P'
+		"PT1X",               // invalid unit
+		"P1H",                // 'H' before 'T'
+		"PT1D",               // 'D' in time section
+		"P99999999W",         // overflow
+		"P106751DT23H47M17S", // overflow
 	}
 	// Loop through the invalid inputs and check that they return an error.
 	for _, in := range invalid {
