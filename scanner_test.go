@@ -140,7 +140,7 @@ func TestParseCalScannerErr(t *testing.T) {
 	// The error must be the I/O error, not the structural
 	// "Unexpected end of input while parsing calendar".
 	if !strings.Contains(err.Error(), "disk read failed") {
-		t.Fatalf("expected scanner I/O error, got: %v", err)
+		t.Fatal(tserr.UnexpectedError(&tserr.UnexpectedErrorArgs{Expected: errors.New("scanner I/O error"), Actual: err}))
 	}
 }
 
@@ -167,6 +167,6 @@ func TestParseEventScannerErr(t *testing.T) {
 	// The error must be the I/O error, not the structural
 	// "NotFound END:VEVENT".
 	if !strings.Contains(err.Error(), "disk read failed") {
-		t.Fatalf("expected scanner I/O error, got: %v", err)
+		t.Fatal(tserr.UnexpectedError(&tserr.UnexpectedErrorArgs{Expected: errors.New("scanner I/O error"), Actual: err}))
 	}
 }
