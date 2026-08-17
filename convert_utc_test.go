@@ -280,6 +280,19 @@ func TestTransitionTime(t *testing.T) {
 			want: time.Date(2024, time.March, 11, 2, 0, 0, 0, time.UTC),
 		},
 		{
+			// Fast path: a fixed (non-recurring) rule where the requested year
+			// matches DTStart's year. transitionTime must return DTStart verbatim
+			// without going through the time.Date reconstruction, preserving the
+			// exact nanosecond and location of DTStart.
+			name: "fixed transition fast path when year matches DTStart year",
+			rule: tsicsparser.TimezoneRule{
+				Type:    tsicsparser.Standard,
+				DTStart: time.Date(2007, time.March, 11, 2, 0, 0, 0, time.UTC),
+			},
+			year: 2007,
+			want: time.Date(2007, time.March, 11, 2, 0, 0, 0, time.UTC),
+		},
+		{
 			// Time-of-day preservation: only the date should change between years;
 			// the hour/minute/second come from DTSTART.
 			name: "time of day preserved from DTSTART",
@@ -312,6 +325,45 @@ func TestTransitionTime(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestTransitionTimeErr tests the transitionTime function.
+// It checks that the function returns an error for a fixed (non-recurring)
+// rule whose DTSTART day-of-month does not exist in the requested year —
+// specifically Feb 29 in a non-leap year, which time.Date normalizes
+// forward into March, triggering the month-mismatch error branch.
+// It fails if the function returns nil.
+func TestTransitionTimeErr(t *testing.T) {
+    // Define a set of test cases that should all return an error.
+    tests := []struct {
+        name string
+        rule tsicsparser.TimezoneRule
+        year int
+    }{
+        {
+            // Fixed transition on Feb 29 requested for a non-leap year (2025).
+            // time.Date(2025, Feb, 29, ...) normalizes to Mar 1, so the
+            // resulting month (March) != DTStart's month (February) and
+            // transitionTime returns an InvalidFormat error.
+            name: "fixed transition Feb 29 in non-leap year",
+            rule: tsicsparser.TimezoneRule{
+                Type:    tsicsparser.Standard,
+                DTStart: time.Date(2004, time.February, 29, 2, 0, 0, 0, time.UTC),
+            },
+            year: 2025,
+        },
+    }
+    // Loop through the tests and verify that each one returns an error.
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            // Compute the transition time for the given rule and year.
+            _, err := tsicsparser.TransitionTime(tt.rule, tt.year)
+            // Verify that an error is returned for the invalid input.
+            if err == nil {
+                t.Error(tserr.NilFailed("transitionTime"))
+            }
+        })
+    }
 }
 
 // TestConvertToUTC tests the ConvertToUTC function across all of its
@@ -731,6 +783,40 @@ func TestConvertToUTCErr(t *testing.T) {
 			RRule:        &tsicsparser.RRule{Freq: "YEARLY", ByMonth: int(time.November), ByDay: "1SU"},
 		},
 	}
+	// Define reusable "invalid" US-Eastern rulesets for the Offset-error case.
+	invalidRules1 := []tsicsparser.TimezoneRule{
+		{
+			Type:         tsicsparser.Daylight,
+			TZOffsetFrom: -5 * 3600,
+			TZOffsetTo:   -4 * 3600,
+			DTStart:      time.Date(0, time.March, 9, 2, 0, 0, 0, time.UTC),
+			RRule:        &tsicsparser.RRule{Freq: "YEARLY", ByMonth: int(time.March), ByDay: "2SU"},
+		},
+		{
+			Type:         tsicsparser.Standard,
+			TZOffsetFrom: -5 * 3600, // <-- mismatch
+			TZOffsetTo:   -5 * 3600,
+			DTStart:      time.Date(0, time.November, 2, 2, 0, 0, 0, time.UTC),
+			RRule:        &tsicsparser.RRule{Freq: "YEARLY", ByMonth: int(time.November), ByDay: "1SU"},
+		},
+	}
+	invalidRules2 := []tsicsparser.TimezoneRule{
+		{
+			Type:         tsicsparser.Daylight,
+			TZOffsetFrom: -5 * 3600,
+			TZOffsetTo:   -4 * 3600,
+			DTStart:      time.Date(0, time.March, 9, 2, 0, 0, 0, time.UTC),
+			RRule:        &tsicsparser.RRule{Freq: "YEARLY", ByMonth: int(time.March), ByDay: "2SU"},
+		},
+		{
+			Type:         tsicsparser.Standard,
+			TZOffsetFrom: -4 * 3600,
+			TZOffsetTo:   -4 * 3600, // <-- mismatch
+			DTStart:      time.Date(0, time.November, 2, 2, 0, 0, 0, time.UTC),
+			RRule:        &tsicsparser.RRule{Freq: "YEARLY", ByMonth: int(time.November), ByDay: "1SU"},
+		},
+	}
+
 	// Define a set of test cases that should all return an error.
 	tests := []struct {
 		name      string
@@ -754,6 +840,24 @@ func TestConvertToUTCErr(t *testing.T) {
 			tz: tsicsparser.Timezone{
 				TZID:  "US-Eastern",
 				Rules: validRules,
+			},
+		},
+		{
+			name:      "Offset mismatch 1",
+			localTime: time.Date(2025, time.June, 15, 12, 0, 0, 0, time.UTC),
+			tzid:      "US-Eastern",
+			tz: tsicsparser.Timezone{
+				TZID:  "US-Eastern",
+				Rules: invalidRules1,
+			},
+		},
+		{
+			name:      "Offset mismatch 2",
+			localTime: time.Date(2025, time.June, 15, 12, 0, 0, 0, time.UTC),
+			tzid:      "US-Eastern",
+			tz: tsicsparser.Timezone{
+				TZID:  "US-Eastern",
+				Rules: invalidRules2,
 			},
 		},
 		{
