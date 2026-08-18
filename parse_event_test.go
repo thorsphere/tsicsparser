@@ -5,6 +5,7 @@ package tsicsparser_test
 
 // Import the necessary packages for testing, string manipulation, and custom error handling.
 import (
+	"errors"
 	"fmt"     // For formatting error messages.
 	"strings" // For string manipulation.
 	"testing" // For writing test cases.
@@ -483,5 +484,40 @@ func TestParseEventErr(t *testing.T) {
 				t.Fatal(tserr.NilFailed(tt.name))
 			}
 		})
+	}
+}
+
+// TestParseEventNestedBlockErr tests that a structural error inside a
+// nested sub-component (e.g. VALARM) is surfaced by parseEvent through
+// the collectRawBlock error branch in its case "BEGIN" arm, rather
+// than being masked or misattributed to the outer VEVENT.
+func TestParseEventNestedBlockErr(t *testing.T) {
+	// A VEVENT containing a nested BEGIN:VALARM whose body is
+	// malformed: END:VTODO appears at depth 0 inside the VALARM, so
+	// collectRawBlock returns "unexpected END:VTODO inside VALARM".
+	// parseEvent must propagate that error from its case "BEGIN" arm
+	// (the collectRawBlock error branch), not from its own END handling
+	// (which would say "inside VEVENT").
+	input := "BEGIN:VEVENT\nDTSTART:20250101T120000Z\nBEGIN:VALARM\nEND:VTODO\nEND:VEVENT"
+	// Create a new ICSScanner with the test input string.
+	s := tsicsparser.NewICSScanner(strings.NewReader(input), "test")
+	// Consume the BEGIN:VEVENT line, mirroring how the calendar parser
+	// hands the scanner to parseEvent after spotting BEGIN.
+	s.Scan()
+	// Call ParseEvent and verify that an error is returned.
+	_, err := tsicsparser.ParseEvent(s, nil)
+	// If there is no error, the test has failed.
+	if err == nil {
+		t.Fatal(tserr.NilFailed("nested block error should surface"))
+	}
+	// The error must originate from collectRawBlock (referencing the
+	// nested VALARM block), not from parseEvent's own END handling
+	// (which would reference VEVENT). This proves the error propagated
+	// through the collectRawBlock error branch.
+	if !strings.Contains(err.Error(), "VALARM") {
+		t.Fatal(tserr.UnexpectedError(&tserr.UnexpectedErrorArgs{
+			Expected: errors.New("error referencing VALARM (from collectRawBlock)"),
+			Actual:   err,
+		}))
 	}
 }
