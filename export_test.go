@@ -5,18 +5,20 @@ package tsicsparser
 
 // Export internal functions for external test package.
 var (
-	ParseTimezone  = parseTimezone
-	ParseProdId    = parseProdID
-	ParseWeekday   = parseWeekday
-	ParseByDay     = parseByDay
-	NthWeekday     = nthWeekday
-	SplitKeyParams = splitKeyParams
-	TransitionTime = transitionTime
-	ConvertToUTC   = convertToUTC
-	ParseDuration  = parseDuration
-	ParseDTValue   = parseDTValue
-	ParseEvent     = parseEvent
-	ParseCalendar  = parseCalendar
+	ParseTimezone       = parseTimezone
+	ParseProdId         = parseProdID
+	ParseWeekday        = parseWeekday
+	ParseByDay          = parseByDay
+	NthWeekday          = nthWeekday
+	SplitKeyParams      = splitKeyParams
+	TransitionTime      = transitionTime
+	ConvertToUTC        = convertToUTC
+	ParseDuration       = parseDuration
+	ParseDTValue        = parseDTValue
+	ParseEvent          = parseEvent
+	ParseCalendar       = parseCalendar
+	CollectRawBlock     = collectRawBlock
+	ParseBufferedEvents = parseBufferedEvents
 )
 
 func (s *ICSScanner) ExportReadLine() (string, bool) {
