@@ -170,3 +170,30 @@ func TestParseEventScannerErr(t *testing.T) {
 		t.Fatal(tserr.UnexpectedError(&tserr.UnexpectedErrorArgs{Expected: errors.New("scanner I/O error"), Actual: err}))
 	}
 }
+
+// TestParseTimezoneScannerErr tests that an I/O error from the
+// scanner is surfaced by parseTimezone, not masked by the
+// "NotFound END:VTIMEZONE" structural error returned when the stream
+// ends before the component close.
+func TestParseTimezoneScannerErr(t *testing.T) {
+    // A valid VTIMEZONE header up to the point where the reader fails.
+    // BEGIN:VTIMEZONE is consumed by the caller (mirroring parseCalendar),
+    // so the body starts at TZID.
+    head := "TZID:US-Eastern\nBEGIN:STANDARD\nDTSTART:19701101T020000\n"
+    // Create a new ICSScanner to read from a faulty reader.
+    s := tsicsparser.NewICSScanner(
+        &faultyReader{data: []byte(head), err: errors.New("disk read failed")},
+        "test")
+    // Call ParseTimezone on the faulty scanner and check that it
+    // returns an error.
+    _, err := tsicsparser.ParseTimezone(s)
+    // If there is no error, the test has failed.
+    if err == nil {
+        t.Fatal(tserr.NilFailed("scanner I/O error should surface"))
+    }
+    // The error must be the I/O error, not the structural
+    // "NotFound END:VTIMEZONE".
+    if !strings.Contains(err.Error(), "disk read failed") {
+        t.Fatal(tserr.UnexpectedError(&tserr.UnexpectedErrorArgs{Expected: errors.New("scanner I/O error"), Actual: err}))
+    }
+}
