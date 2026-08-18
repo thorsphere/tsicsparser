@@ -264,3 +264,104 @@ func TestParseCalendarName(t *testing.T) {
 		})
 	}
 }
+
+// TestCollectRawBlockErrors tests the collectRawBlock function with
+// various malformed inputs to ensure that it correctly identifies and
+// reports structural errors. Each test case is designed to trigger a
+// specific error condition in the CollectRawBlock function:
+//   - a line that cannot be split into a key-value pair (no colon),
+//   - an END:<other> at depth 0 with no matching BEGIN (unexpected END),
+//   - EOF before the matching END:<block> (NotFound).
+func TestCollectRawBlockErrors(t *testing.T) {
+	// Define a slice of test cases, each containing a name and an input
+	// string representing a malformed VEVENT body in ICS format. The
+	// "BEGIN:VEVENT" line is consumed by the caller (mirroring
+	// parseCalendar), so each body starts directly with the first
+	// property line.
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			// A line with no colon cannot be split into a key-value pair
+			// by splitKeyValue, so collectRawBlock returns that error.
+			name:  "invalid_line_no_colon",
+			input: "DTSTART:20250101T120000Z\nSUMMARY-Test\nEND:VEVENT",
+		},
+		{
+			// An END:<other> at depth 0 (no matching BEGIN:<other>) is a
+			// structural error: "unexpected END:VTODO inside VEVENT".
+			name:  "unexpected_end_other",
+			input: "DTSTART:20250101T120000Z\nEND:VTODO",
+		},
+		{
+			// EOF before the matching END:VEVENT. The stream ends without
+			// the close tag, so collectRawBlock returns NotFound.
+			name:  "missing_END_VEVENT",
+			input: "DTSTART:20250101T120000Z\nSUMMARY:Test",
+		},
+	}
+	// Iterate over each test case defined in the tests slice.
+	for _, tt := range tests {
+		// Run each test case as a subtest to isolate failures and provide better reporting.
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a new ICSScanner with the test input string.
+			s := tsicsparser.NewICSScanner(strings.NewReader(tt.input), "test")
+			// Call the CollectRawBlock function with block "VEVENT" and
+			// check for errors.
+			_, err := tsicsparser.CollectRawBlock(s, "VEVENT")
+			// Check if the error is nil, which indicates that the parser
+			// did not catch the expected error.
+			if err == nil {
+				t.Fatal(tserr.NilFailed(tt.name))
+			}
+		})
+	}
+}
+
+// TestParseBufferedEventsErr tests that a parseEvent error during pass 2
+// is surfaced by parseBufferedEvents through its error branch, rather
+// than being silently swallowed. Each case provides a raw VEVENT body
+// (the lines between BEGIN:VEVENT and END:VEVENT, exclusive, as
+// collected by pass 1) that makes parseEvent return an error when
+// parseBufferedEvents reconstructs and re-scans it.
+func TestParseBufferedEventsErr(t *testing.T) {
+	// Define test cases, each providing a raw VEVENT body that triggers
+	// a distinct parseEvent failure during pass 2.
+	tests := []struct {
+		name string
+		raw  []string
+	}{
+		{
+			// No DTSTART: parseEvent reaches END:VEVENT with a zero
+			// Start (and no End/DURATION) and returns
+			// "missing required DTSTART in VEVENT".
+			name: "missing required DTSTART",
+			raw:  []string{"SUMMARY:Test"},
+		},
+		{
+			// A line without a colon cannot be split by splitKeyValue,
+			// so parseEvent returns that error before reaching END:VEVENT.
+			name: "line without colon",
+			raw:  []string{"DTSTART:20250101T120000Z", "INVALIDLINE"},
+		},
+	}
+	// Iterate over each test case and run it as a subtest.
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// A minimal calendar; Timezones is empty because the
+			// malformed events do not reference any TZID.
+			cal := &tsicsparser.Calendar{}
+			// Call ParseBufferedEvents with a single malformed raw block.
+			// parseBufferedEvents joins the raw lines and appends
+			// "\nEND:VEVENT" before handing the body to parseEvent.
+			err := tsicsparser.ParseBufferedEvents(cal, [][]string{tt.raw})
+			// If there is no error, the parseEvent error was not
+			// propagated through the "return err" branch — the test
+			// has failed.
+			if err == nil {
+				t.Fatal(tserr.NilFailed(tt.name))
+			}
+		})
+	}
+}
