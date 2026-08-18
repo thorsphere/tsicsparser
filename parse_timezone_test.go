@@ -182,3 +182,16 @@ func TestParseTimezoneErrors(t *testing.T) {
 		})
 	}
 }
+
+// TestRuleTypeString tests the String function of the RuleType type.
+func TestRuleTypeString(t *testing.T) {
+	if got := tsicsparser.Standard.String(); got != "STANDARD" {
+		t.Fatal(tserr.Return(&tserr.ReturnArgs{Op: "RuleType.String", Actual: got, Want: "STANDARD"}))
+	}
+	if got := tsicsparser.Daylight.String(); got != "DAYLIGHT" {
+		t.Fatal(tserr.Return(&tserr.ReturnArgs{Op: "RuleType.String", Actual: got, Want: "DAYLIGHT"}))
+	}
+	if got := tsicsparser.RuleType(99).String(); got != "<unknown>" {
+		t.Fatal(tserr.Return(&tserr.ReturnArgs{Op: "RuleType.String", Actual: got, Want: "<unknown>"}))
+	}
+}
