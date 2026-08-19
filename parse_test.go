@@ -80,6 +80,7 @@ func TestParseProdIdErr(t *testing.T) {
 // TestParseCalendarErr tests the ParseCalendarErr function.
 // It defines a set of test cases with invalid calendar input strings
 // to ensure that it correctly returns errors for malformed input.
+// Each subtest targets a distinct early-return error path.
 func TestParseCalendarErr(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -101,6 +102,147 @@ func TestParseCalendarErr(t *testing.T) {
 			"PRODID:+//Thorsphere//inner//en\n" +
 			"END:VCALENDAR\n" +
 			"END:VCALENDAR"},
+		// Tests the splitKeyValue error branch: a line inside VCALENDAR
+		// that has no colon cannot be split into a key/value pair, so
+		// splitKeyValue returns an error which parseCalendar propagates.
+		{name: "splitKeyValue error", input: "BEGIN:VCALENDAR\n" +
+			"NOCOLONLINE\n" +
+			"VERSION:2.0\n" +
+			"PRODID:+//Thorsphere//tsicsparser//en\n" +
+			"END:VCALENDAR"},
+		// Tests the parseProdID error branch: a PRODID value with fewer
+		// than the required four "//"-delimited components is rejected by
+		// parseProdID, and parseCalendar propagates the error.
+		{name: "parseProdID error", input: "BEGIN:VCALENDAR\n" +
+			"PRODID:+//Thorsphere//tsicsparser\n" +
+			"VERSION:2.0\n" +
+			"END:VCALENDAR"},
+		// Tests the collectRawBlock error branch: a line inside a VEVENT
+		// block that has no colon cannot be split into a key/value pair,
+		// so splitKeyValue (called from collectRawBlock) returns an
+		// error which parseCalendar propagates via the
+		// "if err != nil { return nil, err }" arm of the BEGIN:VEVENT
+		// case.
+		{name: "collectRawBlock error", input: "BEGIN:VCALENDAR\n" +
+			"VERSION:2.0\n" +
+			"PRODID:+//Thorsphere//tsicsparser//en\n" +
+			"BEGIN:VEVENT\n" +
+			"NOCOLONLINE\n" +
+			"END:VEVENT\n" +
+			"END:VCALENDAR"},
+		// Tests the parseTimezone error branch: an END:DAYLIGHT inside a
+		// VTIMEZONE with no matching BEGIN:DAYLIGHT makes parseTimezone
+		// return "END:DAYLIGHT without matching BEGIN:DAYLIGHT", which
+		// parseCalendar propagates via the
+		// "if err != nil { return nil, err }" arm of the BEGIN:VTIMEZONE
+		// case.
+		{name: "parseTimezone error", input: "BEGIN:VCALENDAR\n" +
+			"VERSION:2.0\n" +
+			"PRODID:+//Thorsphere//tsicsparser//en\n" +
+			"BEGIN:VTIMEZONE\n" +
+			"TZID:US-Eastern\n" +
+			"END:DAYLIGHT\n" +
+			"END:VTIMEZONE\n" +
+			"END:VCALENDAR"},
+		// Tests the unexpected END:VEVENT error branch: an END:VEVENT
+		// line appearing at the VCALENDAR level with no matching
+		// BEGIN:VEVENT is rejected by the "case END -> VEVENT" arm of
+		// parseCalendar's switch.
+		{name: "unexpected END:VEVENT", input: "BEGIN:VCALENDAR\n" +
+			"VERSION:2.0\n" +
+			"PRODID:+//Thorsphere//tsicsparser//en\n" +
+			"END:VEVENT\n" +
+			"END:VCALENDAR"},
+		// Tests the unexpected END:VTIMEZONE error branch: an
+		// END:VTIMEZONE line appearing at the VCALENDAR level with no
+		// matching BEGIN:VTIMEZONE is rejected by the
+		// "case END -> VTIMEZONE" arm of parseCalendar's switch.
+		{name: "unexpected END:VTIMEZONE", input: "BEGIN:VCALENDAR\n" +
+			"VERSION:2.0\n" +
+			"PRODID:+//Thorsphere//tsicsparser//en\n" +
+			"END:VTIMEZONE\n" +
+			"END:VCALENDAR"},
+		// Tests the unknown sub-component error branch: a BEGIN:VTODO
+		// (an unrecognized sub-component) triggers the default arm of
+		// the inner BEGIN switch, which calls collectRawBlock to consume
+		// the block. A line inside the VTODO body that has no colon
+		// makes splitKeyValue (called from collectRawBlock) return an
+		// error, which parseCalendar propagates via the
+		// "if _, err := collectRawBlock(...); err != nil { return nil, err }"
+		// arm.
+		{name: "unknown sub-component collectRawBlock error", input: "BEGIN:VCALENDAR\n" +
+			"VERSION:2.0\n" +
+			"PRODID:+//Thorsphere//tsicsparser//en\n" +
+			"BEGIN:VTODO\n" +
+			"NOCOLONLINE\n" +
+			"END:VTODO\n" +
+			"END:VCALENDAR"},
+		// Tests the parseBufferedEvents error branch at END:VCALENDAR:
+		// a VEVENT block with no DTSTART is buffered during pass 1, and
+		// when parseCalendar reaches END:VCALENDAR it calls
+		// parseBufferedEvents for pass 2. parseEvent rejects the
+		// reconstructed block with "missing required DTSTART in VEVENT",
+		// and parseCalendar propagates that error via the
+		// "if err := parseBufferedEvents(...); err != nil { return nil, err }"
+		// arm of the case "VCALENDAR" END branch.
+		{name: "parseBufferedEvents error at END:VCALENDAR", input: "BEGIN:VCALENDAR\n" +
+			"VERSION:2.0\n" +
+			"PRODID:+//Thorsphere//tsicsparser//en\n" +
+			"BEGIN:VEVENT\n" +
+			"SUMMARY:Test\n" +
+			"END:VEVENT\n" +
+			"END:VCALENDAR"},
+		// Tests the unexpected END:<other> error branch: an END:VALARM
+		// line appearing at the VCALENDAR level (no matching
+		// BEGIN:VALARM) is not VEVENT, VTIMEZONE, or VCALENDAR, so it
+		// falls through to the default arm of the inner END switch and
+		// is rejected with "Unexpected END:VALARM".
+		{name: "unexpected END:VALARM", input: "BEGIN:VCALENDAR\n" +
+			"VERSION:2.0\n" +
+			"PRODID:+//Thorsphere//tsicsparser//en\n" +
+			"END:VALARM\n" +
+			"END:VCALENDAR"},
+		// Tests the EOF !calStarted branch: the stream ends without
+		// ever seeing BEGIN:VCALENDAR, so the post-loop
+		// "if !calStarted { return nil, tserr.NotFound(...) }" arm
+		// fires. Every line before BEGIN:VCALENDAR is skipped by the
+		// "if !calStarted { ... continue }" guard, so calStarted stays
+		// false and the loop exits at EOF.
+		{name: "EOF without BEGIN:VCALENDAR", input: "VERSION:2.0\n" +
+			"PRODID:+//Thorsphere//tsicsparser//en"},
+		// Tests the EOF parseBufferedEvents branch: a VEVENT block is
+		// fully collected during pass 1 (END:VEVENT present) but the
+		// stream ends before END:VCALENDAR. The post-loop
+		// "if err := parseBufferedEvents(...); err != nil { return nil, err }"
+		// arm fires because the buffered event has no DTSTART, so
+		// parseEvent returns "missing required DTSTART in VEVENT".
+		// This is distinct from "parseBufferedEvents error at
+		// END:VCALENDAR", which exercises the same parseEvent failure
+		// via the END:VCALENDAR path rather than the EOF path.
+		{name: "EOF parseBufferedEvents error", input: "BEGIN:VCALENDAR\n" +
+			"VERSION:2.0\n" +
+			"PRODID:+//Thorsphere//tsicsparser//en\n" +
+			"BEGIN:VEVENT\n" +
+			"SUMMARY:Test\n" +
+			"END:VEVENT"},
+		// Tests the EOF validateRequiredFields branch: the stream ends
+		// before END:VCALENDAR with no events (so parseBufferedEvents
+		// succeeds) but PRODID is missing, so the post-loop
+		// "if err := cal.validateRequiredFields(); err != nil { return nil, err }"
+		// arm fires. This is distinct from "missing PRODID", which
+		// exercises the same validation failure via the END:VCALENDAR
+		// path rather than the EOF path.
+		{name: "EOF missing PRODID", input: "BEGIN:VCALENDAR\n" +
+			"VERSION:2.0"},
+		// Tests the EOF final-fallback branch: the stream ends before
+		// END:VCALENDAR, but calStarted is true, no events were
+		// buffered, and all required fields are present — so every
+		// preceding post-loop guard is skipped and the final
+		// "return nil, tserr.InvalidFormat(\"Unexpected end of input while parsing calendar\")"
+		// fires.
+		{name: "EOF unexpected end of input", input: "BEGIN:VCALENDAR\n" +
+			"VERSION:2.0\n" +
+			"PRODID:+//Thorsphere//tsicsparser//en"},
 	}
 	// Iterate over the test cases and run each one as a subtest.
 	for _, tt := range tests {
@@ -363,5 +505,37 @@ func TestParseBufferedEventsErr(t *testing.T) {
 				t.Fatal(tserr.NilFailed(tt.name))
 			}
 		})
+	}
+}
+
+// TestParseCalendarIgnoresUnknownKeys tests that a non-X- prefixed
+// calendar-level property not handled by any case of parseCalendar's
+// outer switch is silently ignored via the
+// "continue // Ignore other keys." branch, rather than causing a parse
+// error or being misparsed. RFC 7986 adds properties (e.g. SOURCE,
+// REFRESH-INTERVAL, COLOR) that this package does not extract; they
+// must not break parsing.
+func TestParseCalendarIgnoresUnknownKeys(t *testing.T) {
+	input := "BEGIN:VCALENDAR\n" +
+		"VERSION:2.0\n" +
+		"PRODID:+//Thorsphere//tsicsparser//en\n" +
+		"COLOR:blue\n" +
+		"END:VCALENDAR"
+	s := tsicsparser.NewICSScanner(strings.NewReader(input), "test")
+	cal, err := tsicsparser.ParseCalendar(s)
+	if err != nil {
+		t.Fatal(tserr.Op(&tserr.OpArgs{Op: "ParseCalendar", Err: err}))
+	}
+	// The unknown key must not populate any Calendar field.
+	if cal.Name != "" {
+		t.Fatal(tserr.EqualStr(&tserr.EqualStrArgs{
+			Var: "Name", Actual: cal.Name, Want: "",
+		}))
+	}
+	// The calendar must still parse with its required fields intact.
+	if cal.Version != "2.0" {
+		t.Fatal(tserr.EqualStr(&tserr.EqualStrArgs{
+			Var: "Version", Actual: cal.Version, Want: "2.0",
+		}))
 	}
 }

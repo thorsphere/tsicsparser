@@ -3,12 +3,13 @@
 // (FSL-1.1-ALv2) that can be found in the LICENSE file.
 package tsicsparser
 
+// Import necessary packages for testing the tsicsparser package.
 import (
-	"fmt"
-	"strings"
+	"fmt" // Import the fmt package to work with string formatting functions.
+	"strings" // Import the strings package to work with string manipulation functions.
 
-	"github.com/thorsphere/tserr"
-	"github.com/thorsphere/tstable"
+	"github.com/thorsphere/tserr" // Import the tserr package to handle error reporting and formatting in the tests.
+	"github.com/thorsphere/tstable" // Import the tstable package to work with tables in the tests.
 )
 
 // Calendar represents a calendar with events.
