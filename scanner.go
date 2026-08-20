@@ -12,6 +12,11 @@ import (
 	"github.com/thorsphere/tserr" // Import the tserr package for error handling.
 )
 
+// Define a constant for the maximum buffer size.
+const (
+	maxBufferSize = 10 * 1024 * 1024 // 10MB max capacity
+)
+
 // ICSScanner is a scanner that reads lines from an ICS file,
 // handling line folding according to the ICS specification.
 type ICSScanner struct {
@@ -27,10 +32,17 @@ type ICSScanner struct {
 func NewICSScanner(r io.Reader, name string) *ICSScanner {
 	// Return a new ICSScanner that reads from the provided io.Reader.
 	// The scanner will handle line folding according to the ICS specification.
-	scanner := bufio.NewScanner(r)
+	// Create a new bufio.Reader to read from the provided io.Reader.
+	br := bufio.NewReader(r)
+	// Strip UTF-8 BOM, if present
+	if bom, err := br.Peek(3); err == nil && string(bom) == "\xef\xbb\xbf" {
+		_, _ = br.Discard(3) // strip UTF-8 BOM
+	}
+	// Create a new bufio.Scanner to read from the bufio.Reader that has stripped the BOM, if present.
+	scanner := bufio.NewScanner(br)
 	// Allocate a larger buffer (e.g., 1MB) to handle large attachments or descriptions
 	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024) // 1MB max capacity
+	scanner.Buffer(buf, maxBufferSize) // max capacity
 	// Return a new ICSScanner that reads from the provided io.Reader.
 	return &ICSScanner{
 		scanner: scanner,
