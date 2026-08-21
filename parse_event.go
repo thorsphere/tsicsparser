@@ -20,6 +20,15 @@ type Event struct {
 	Location string    // Location is the location where the event takes place.
 	Start    time.Time // Start is the start time of the event in UTC.
 	End      time.Time // End is the end time of the event in UTC.
+	// RRule holds the raw RFC 5545 §3.3.10 recurrence rule (e.g.
+	// "FREQ=WEEKLY;BYDAY=MO,WE") if the event is recurring, or "" if it
+	// is a single occurrence.
+	//
+	// IMPORTANT: the rule is stored verbatim and NOT expanded. Start and
+	// End describe only the FIRST occurrence (DTSTART). Callers must not
+	// treat a recurring event as a one-off; recurrence expansion is the
+	// caller's responsibility.
+	RRule string
 }
 
 // parseEvent parses an ICS event from the given scanner and returns an Event and an error if any.
@@ -62,6 +71,17 @@ func parseEvent(scanner *ICSScanner, tzs Timezones) (Event, error) {
 		// Handle the LOCATION property, which specifies the event location.
 		case "LOCATION":
 			event.Location = parts.Value
+		// Handle the RRULE property: the raw recurrence rule. Stored verbatim;
+		// expansion is deliberately out of scope for this version.
+		case "RRULE":
+			// RRULE may appear at most once per VEVENT.
+			if event.RRule != "" {
+				return Event{}, tserr.InvalidFormat("RRULE already set")
+			}
+			if err := validateRRule(parts.Value); err != nil {
+				return Event{}, err
+			}
+			event.RRule = parts.Value
 		// Handle the BEGIN of a nested component.
 		case "BEGIN":
 			// A nested sub-component inside VEVENT — most commonly
@@ -280,8 +300,74 @@ func (ev Event) String() string {
 	tbl.AddRow([]string{"Location", ev.Location})
 	tbl.AddRow([]string{"Start", ev.Start.Format(time.RFC3339)})
 	tbl.AddRow([]string{"End", ev.End.Format(time.RFC3339)})
+	// If the event has an RRule, add its value to the table
+	if ev.RRule != "" {
+		tbl.AddRow([]string{"RRule", ev.RRule})
+	}
 	// Set the multi-line flag for the second column (UID)
 	tbl.SetMultiline(ev.Uid)
 	// Return the formatted table as a string
 	return tbl.String()
+}
+
+// validateRRule performs cheap syntactic validation of an RRULE value
+// without interpreting it: FREQ is required and must be one of the seven
+// defined values, and UNTIL and COUNT MUST NOT both be present (RFC 5545
+// §3.3.10). Expansion semantics (BY* rules, INTERVAL, ...) are not
+// validated — the rule is stored verbatim for the caller.
+func validateRRule(s string) error {
+	// Return an error if the RRULE string is empty, as it cannot be parsed.
+	if s == "" {
+		return tserr.InvalidFormat("empty RRULE")
+	}
+	// Initialize flags to indicate whether FREQ, UNTIL, and COUNT are present.
+	var hasFreq, hasUntil, hasCount bool
+	// Iterate over each part of the RRULE string.
+	for part := range strings.SplitSeq(s, ";") {
+		// Split each part by the first "=" to separate the key and value.
+		kv := strings.SplitN(part, "=", 2)
+		// If the split does not result in exactly two parts (key and value),
+		// return an error indicating invalid format.
+		if len(kv) != 2 {
+			return tserr.InvalidFormat(fmt.Sprintf("invalid RRULE part: %s", part))
+		}
+		// Use a switch statement to handle different keys in the RRULE.
+		switch kv[0] {
+		case "FREQ": // FREQ is required
+			switch kv[1] { // If the FREQ value is one of the seven defined values, set hasFreq to true.
+			case "SECONDLY", "MINUTELY", "HOURLY", "DAILY", "WEEKLY", "MONTHLY", "YEARLY":
+				hasFreq = true
+			default: // If the FREQ value is not one of the seven defined values, return an error.
+				return tserr.InvalidFormat(fmt.Sprintf("invalid RRULE FREQ value: %s", kv[1]))
+			}
+		case "UNTIL": // UNTIL is optional
+			// If the UNTIL value is not a valid datetime, return an error.
+			if _, _, err := parseICSDateTime(kv[1]); err != nil {
+				return tserr.InvalidFormat(fmt.Sprintf("invalid RRULE UNTIL value: %s", kv[1]))
+			}
+			hasUntil = true
+		case "COUNT": // COUNT is optional
+			hasCount = true
+		}
+	}
+	// If FREQ is not present, return an error.
+	if !hasFreq {
+		return tserr.InvalidFormat("RRULE missing required FREQ")
+	}
+	// If UNTIL and COUNT are both present, return an error.
+	if hasUntil && hasCount {
+		return tserr.InvalidFormat("RRULE must not contain both UNTIL and COUNT")
+	}
+	// TODO: validate BY* rules
+	// TODO: validate INTERVAL
+	// TODO: validate WKST
+	// TODO: validate COUNT
+	// TODO: validate BYSETPOS
+	// TODO: validate BYDAY
+	// TODO: validate BYMONTHDAY
+	// TODO: validate BYYEARDAY
+	// TODO: validate BYWEEKNO
+	// TODO: validate BYMONTH
+	// Return nil if all checks pass to indicate a valid RRULE.
+	return nil
 }
