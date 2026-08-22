@@ -29,6 +29,10 @@ type Event struct {
 	// treat a recurring event as a one-off; recurrence expansion is the
 	// caller's responsibility.
 	RRule string
+	// AllDay is true when DTSTART was a VALUE=DATE property. Start and End
+	// are then normalized to midnight UTC; End is exclusive per RFC 5545
+	// §3.3.5 (a one-day event has End = Start + 24h).
+	AllDay bool
 }
 
 // parseEvent parses an ICS event from the given scanner and returns an Event and an error if any.
@@ -45,6 +49,7 @@ func parseEvent(scanner *ICSScanner, tzs Timezones) (Event, error) {
 		pendingDuration time.Duration
 		hasDuration     bool
 		endSetByEnd     bool // true if event.End was set by DTEND (not DURATION)
+		endIsDate       bool // true if DTEND was a VALUE=DATE property
 	)
 	// Loop through the lines of the scanner until END:VEVENT is encountered.
 	for scanner.Scan() {
@@ -114,10 +119,22 @@ func parseEvent(scanner *ICSScanner, tzs Timezones) (Event, error) {
 					// No DTSTART at all — also an error.
 					return Event{}, tserr.InvalidFormat("missing required DTSTART in VEVENT")
 				}
+				// RFC 5545 §3.6.1: DTEND's value type MUST match DTSTART's.
+				if endSetByEnd && event.AllDay != endIsDate {
+					// Return an error if DTEND's value type does not match DTSTART's.
+					return Event{}, tserr.InvalidFormat(
+						"DTSTART and DTEND value types must match (both DATE or both DATE-TIME)")
+				}
 				// If only DTSTART was given (no DTEND, no DURATION), End defaults to Start.
 				// This is valid per RFC 5545: a point-in-time event.
 				if event.End.IsZero() {
-					event.End = event.Start
+					if event.AllDay {
+						// RFC 5545 §3.6.1: a DATE DTSTART with no DTEND/DURATION means
+						// the event ends on the same calendar date — i.e. spans the day.
+						event.End = event.Start.AddDate(0, 0, 1)
+					} else {
+						event.End = event.Start // point-in-time, as today
+					}
 				}
 				// Successfully parsed the VEVENT component; return the event.
 				return event, nil
@@ -139,12 +156,34 @@ func parseEvent(scanner *ICSScanner, tzs Timezones) (Event, error) {
 				if !event.Start.IsZero() {
 					return Event{}, tserr.InvalidFormat("DTSTART already set")
 				}
-				// Parse the DTSTART value into a UTC time.Time, handling both UTC-suffixed and TZID-qualified local times.
-				if event.Start, err = parseDTValue(parts.Value, params, tzs, "DTSTART"); err != nil {
-					return Event{}, err
+				// If the VALUE is DATE, parse the date-only value into a UTC time.Time.
+				if params["VALUE"] == "DATE" {
+					// RFC 5545 §3.2.20: TZID MUST NOT be applied to DATE properties.
+					if _, hasTZID := params["TZID"]; hasTZID {
+						return Event{}, tserr.InvalidFormat(
+							"TZID must not be combined with VALUE=DATE on DTSTART (RFC 5545 §3.2.20)")
+					}
+					// If the VALUE is DATE, parse the date-only value into a UTC time.Time.
+					if event.Start, err = parseICSDate(parts.Value); err != nil {
+						return Event{}, err
+					}
+					// Set AllDay to true to indicate that DTSTART was a DATE value.
+					event.AllDay = true
+				} else {
+					// Parse the DTSTART value into a UTC time.Time, handling both UTC-suffixed and TZID-qualified local times.
+					if event.Start, err = parseDTValue(parts.Value, params, tzs, "DTSTART"); err != nil {
+						return Event{}, err
+					}
+
 				}
 				// If a DURATION was seen before DTSTART, compute End now that Start is known.
 				if hasDuration {
+					// RFC 5545 §3.8.2.5: with a DATE DTSTART, DURATION must be
+					// dur-day or dur-week — no time components.
+					if event.AllDay && pendingDuration%(24*time.Hour) != 0 {
+						return Event{}, tserr.InvalidFormat(
+							"DURATION with DATE DTSTART must be dur-day or dur-week (RFC 5545 §3.8.2.5)")
+					}
 					event.End = event.Start.Add(pendingDuration)
 					hasDuration = false
 				}
@@ -163,10 +202,29 @@ func parseEvent(scanner *ICSScanner, tzs Timezones) (Event, error) {
 				if !event.End.IsZero() || hasDuration {
 					return Event{}, tserr.InvalidFormat("DTEND and DURATION are mutually exclusive")
 				}
-				// Parse the DTEND value into a UTC time.Time, handling both UTC-suffixed and TZID-qualified local times.
-				if event.End, err = parseDTValue(parts.Value, params, tzs, "DTEND"); err != nil {
-					return Event{}, err
+				// If the VALUE is DATE, parse the date-only value into a UTC time.Time.
+				if params["VALUE"] == "DATE" {
+					// RFC 5545 §3.2.20: TZID MUST NOT be applied to DATE properties.
+					if _, hasTZID := params["TZID"]; hasTZID {
+						// If TZID is present, return an error.
+						return Event{}, tserr.InvalidFormat(
+							"TZID must not be combined with VALUE=DATE on DTEND (RFC 5545 §3.2.20)")
+					}
+					// If the VALUE is DATE, parse the date-only value into a UTC time.Time.
+					if event.End, err = parseICSDate(parts.Value); err != nil {
+						// If there is an error parsing the date-only value, return the error.
+						return Event{}, err
+					}
+					// Set endIsDate to true to indicate that DTEND was set by a VALUE=DATE property.
+					endIsDate = true
+				} else {
+					// Parse the DTEND value into a UTC time.Time, handling both UTC-suffixed
+					// and TZID-qualified local times.
+					if event.End, err = parseDTValue(parts.Value, params, tzs, "DTEND"); err != nil {
+						return Event{}, err
+					}
 				}
+				// Set endSetByEnd to true to indicate that DTEND was set by DTEND.
 				endSetByEnd = true
 			case "DURATION":
 				// DTEND and DURATION can only be used once per event as well as DTEND and DURATION are mutually exclusive.
@@ -186,6 +244,13 @@ func parseEvent(scanner *ICSScanner, tzs Timezones) (Event, error) {
 				}
 				// If DTSTART has already been parsed, compute End immediately.
 				if !event.Start.IsZero() {
+					// RFC 5545 §3.8.2.5: with a DATE DTSTART, DURATION must be
+					// dur-day or dur-week — no time components.
+					if event.AllDay && dur%(24*time.Hour) != 0 {
+						// If the duration is not a whole day or week, return an error.
+						return Event{}, tserr.InvalidFormat(
+							"DURATION with DATE DTSTART must be dur-day or dur-week (RFC 5545 §3.8.2.5)")
+					}
 					// Set the End time by adding the duration to the Start time.
 					event.End = event.Start.Add(dur)
 				} else {
@@ -300,6 +365,10 @@ func (ev Event) String() string {
 	tbl.AddRow([]string{"Location", ev.Location})
 	tbl.AddRow([]string{"Start", ev.Start.Format(time.RFC3339)})
 	tbl.AddRow([]string{"End", ev.End.Format(time.RFC3339)})
+	// If the event is an all-day event, add a row for the AllDay flag
+	if ev.AllDay {
+		tbl.AddRow([]string{"AllDay", "true"})
+	}
 	// If the event has an RRule, add its value to the table
 	if ev.RRule != "" {
 		tbl.AddRow([]string{"RRule", ev.RRule})
@@ -343,7 +412,10 @@ func validateRRule(s string) error {
 		case "UNTIL": // UNTIL is optional
 			// If the UNTIL value is not a valid datetime, return an error.
 			if _, _, err := parseICSDateTime(kv[1]); err != nil {
-				return tserr.InvalidFormat(fmt.Sprintf("invalid RRULE UNTIL value: %s", kv[1]))
+				// If the UNTIL value is not a valid date, try parsing it as a date-only value.
+				if _, err := parseICSDate(kv[1]); err != nil {
+					return tserr.InvalidFormat(fmt.Sprintf("invalid RRULE UNTIL value: %s", kv[1]))
+				}
 			}
 			hasUntil = true
 		case "COUNT": // COUNT is optional
@@ -358,19 +430,23 @@ func validateRRule(s string) error {
 	if hasUntil && hasCount {
 		return tserr.InvalidFormat("RRULE must not contain both UNTIL and COUNT")
 	}
-	// TODO: validate BY* rules
-	// TODO: validate INTERVAL
-	// TODO: validate WKST
-	// TODO: validate COUNT
-	// TODO: validate BYSETPOS
-	// TODO: validate BYDAY
-	// TODO: validate BYMONTHDAY
-	// TODO: validate BYYEARDAY
-	// TODO: validate BYWEEKNO
-	// TODO: validate BYMONTH
-	// TODO: RFC 5545 §3.3.10 allows UNTIL to be a date-only value (UNTIL=20250401)
-	// when DTSTART is a date — but parseICSDateTime only accepts datetime layouts,
-	// so a date-only UNTIL is rejected here.
 	// Return nil if all checks pass to indicate a valid RRULE.
 	return nil
+}
+
+// parseICSDate parses an ICS date-only value ("20250301") into a
+// time.Time at midnight UTC. Per RFC 5545 §3.3.4, DATE values are
+// floating; this package normalizes them to midnight UTC.
+func parseICSDate(s string) (time.Time, error) {
+	// time.Parse returns UTC when the layout has no zone indicator,
+	// and the date-only layout has no time components, so the result
+	// is midnight UTC by construction.
+	t, err := time.Parse("20060102", s)
+	// If there is an error during parsing, return a zero time.Time value and
+	// an error indicating invalid format.
+	if err != nil {
+		return time.Time{}, tserr.InvalidFormat(fmt.Sprintf("invalid date format: %s", s))
+	}
+	// Return the parsed time.Time value and a nil error, indicating successful parsing.
+	return t, nil
 }
