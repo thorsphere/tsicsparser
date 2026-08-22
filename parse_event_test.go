@@ -349,7 +349,7 @@ func TestParseDTValueErr(t *testing.T) {
 	}
 }
 
-// TestParseEventErrors tests the parseEvent function with various malformed ICS
+// TestParseEventErr tests the parseEvent function with various malformed ICS
 // inputs to ensure that it correctly identifies and reports parsing errors. Each
 // test case is designed to trigger a specific error condition in parseEvent,
 // mirroring the approach used by TestParseTimezoneErrors for the timezone parser.
@@ -517,6 +517,77 @@ func TestParseEventErr(t *testing.T) {
 			name:  "empty RRULE",
 			input: "BEGIN:VEVENT\nDTSTART:20250101T120000Z\nRRULE:\nEND:VEVENT",
 		},
+		// --- VALUE=DATE validation errors ---
+		{
+			// RFC 5545 §3.2.20: TZID MUST NOT be applied to DATE properties.
+			// Currently the TZID parameter is silently ignored in the
+			// VALUE=DATE branch; this case pins the stricter behavior.
+			name:  "TZID combined with VALUE=DATE",
+			input: "BEGIN:VEVENT\nDTSTART;TZID=US-Eastern;VALUE=DATE:20250301\nEND:VEVENT",
+		},
+		{
+			// RFC 5545 §3.6.1: DTSTART and DTEND value types must match.
+			// DATE start paired with a DATE-TIME end must be rejected.
+			name:  "DTSTART DATE with DTEND DATE-TIME",
+			input: "BEGIN:VEVENT\nDTSTART;VALUE=DATE:20250301\nDTEND:20250302T120000Z\nEND:VEVENT",
+		},
+		{
+			// The reverse mismatch: DATE-TIME start with a DATE end.
+			// Note: this case errors even without the type-match check
+			// (parseDTValue rejects "20250302" as a datetime), but after
+			// DTEND gains VALUE=DATE support the error must come from the
+			// type-match check instead — this case guards that transition.
+			name:  "DTSTART DATE-TIME with DTEND DATE",
+			input: "BEGIN:VEVENT\nDTSTART:20250301T120000Z\nDTEND;VALUE=DATE:20250302\nEND:VEVENT",
+		},
+		{
+			// RFC 5545 §3.8.2.5: with a DATE DTSTART, DURATION must be
+			// dur-day or dur-week. PT1H has a time component → rejected.
+			name:  "DURATION with time component after DATE DTSTART",
+			input: "BEGIN:VEVENT\nDTSTART;VALUE=DATE:20250301\nDURATION:PT1H\nEND:VEVENT",
+		},
+		{
+			// Same constraint via the pending-DURATION path: DURATION is
+			// seen before DTSTART, and the check fires when DTSTART turns
+			// out to be a DATE (in the DTSTART case's hasDuration branch).
+			name:  "pending DURATION with time component before DATE DTSTART",
+			input: "BEGIN:VEVENT\nDURATION:PT1H\nDTSTART;VALUE=DATE:20250301\nEND:VEVENT",
+		},
+		{
+			// Two RRULE properties in one VEVENT. The first is valid and
+			// stored verbatim; the second hits the duplicate check in
+			// parseEvent's case "RRULE" arm ("RRULE already set") before
+			// validateRRule is ever consulted for it.
+			name: "RRULE already set",
+			input: "BEGIN:VEVENT\nDTSTART:20250101T120000Z\n" +
+				"RRULE:FREQ=WEEKLY\nRRULE:FREQ=DAILY\nEND:VEVENT",
+		},
+		{
+			// A VALUE=DATE DTSTART whose value is not a valid ICS date.
+			// The TZID check passes (no TZID present), so control reaches
+			// the parseICSDate call, which rejects "20250332" (invalid
+			// day-of-month) via its time.Parse error branch; parseEvent
+			// propagates that error from its DTSTART case.
+			name:  "invalid VALUE=DATE DTSTART",
+			input: "BEGIN:VEVENT\nDTSTART;VALUE=DATE:20250332\nEND:VEVENT",
+		},
+		{
+			// The mirror of the DTSTART case: a VALUE=DATE DTEND whose
+			// value fails calendar validation. The duplicate and mutual-
+			// exclusivity checks pass (first DTEND, no DURATION), so the
+			// error comes from parseICSDate via the DTEND case's
+			// VALUE=DATE branch.
+			name:  "invalid VALUE=DATE DTEND",
+			input: "BEGIN:VEVENT\nDTSTART;VALUE=DATE:20250301\nDTEND;VALUE=DATE:20250332\nEND:VEVENT",
+		},
+		{
+			// RFC 5545 §3.2.20: TZID MUST NOT be applied to DATE properties.
+			// The DTEND case's VALUE=DATE branch rejects the combination
+			// before parseICSDate is ever consulted. The DTSTART is a
+			// well-formed VALUE=DATE so no earlier error preempts this one.
+			name:  "TZID combined with VALUE=DATE on DTEND",
+			input: "BEGIN:VEVENT\nDTSTART;VALUE=DATE:20250301\nDTEND;TZID=US-Eastern;VALUE=DATE:20250302\nEND:VEVENT",
+		},
 	}
 
 	// Iterate over each test case and run it as a subtest.
@@ -568,5 +639,237 @@ func TestParseEventNestedBlockErr(t *testing.T) {
 			Expected: errors.New("error referencing VALARM (from collectRawBlock)"),
 			Actual:   err,
 		}))
+	}
+}
+
+// TestParseICSDate tests the parseICSDate function.
+// It checks that an ICS date-only value ("20250301") parses into a
+// time.Time at exactly midnight UTC — both the instant and the location.
+// time.Parse returns UTC when the layout has no zone indicator, and the
+// date-only layout has no time components, so midnight UTC holds by
+// construction; this test pins that invariant against future refactors
+// (e.g. a switch to ParseInLocation would silently break it).
+func TestParseICSDate(t *testing.T) {
+	// Define a set of test cases covering valid date-only values,
+	// including calendar edge cases (leap day, year boundary).
+	tests := []struct {
+		name  string
+		input string
+		want  time.Time
+	}{
+		{
+			name:  "regular date",
+			input: "20250301",
+			want:  time.Date(2025, time.March, 1, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			name:  "leap day",
+			input: "20240229",
+			want:  time.Date(2024, time.February, 29, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			name:  "year boundary",
+			input: "20250101",
+			want:  time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC),
+		},
+	}
+	// Run each test case as a subtest for clearer failure attribution.
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Parse the date-only value into a time.Time.
+			got, err := tsicsparser.ParseICSDate(tt.input)
+			// Fail immediately if an unexpected error is returned.
+			if err != nil {
+				t.Fatal(tserr.Op(&tserr.OpArgs{Op: "ParseICSDate", Fn: tt.input, Err: err}))
+			}
+			// Check the instant: midnight (00:00:00) on the parsed date.
+			if !got.Equal(tt.want) {
+				t.Error(tserr.EqualStr(&tserr.EqualStrArgs{
+					Var:    "date",
+					Want:   tt.want.Format(time.RFC3339),
+					Actual: got.Format(time.RFC3339),
+				}))
+			}
+			// Check the location: must be UTC, not just an equal instant.
+			// Equal() alone cannot catch a location change, because it
+			// compares instants regardless of the attached location.
+			if got.Location() != time.UTC {
+				t.Error(tserr.EqualStr(&tserr.EqualStrArgs{
+					Var:    "location",
+					Want:   time.UTC.String(),
+					Actual: got.Location().String(),
+				}))
+			}
+			// Check the clock fields explicitly: hour, minute, second and
+			// nanosecond must all be zero — the "midnight" half of the
+			// invariant, spelled out so a failure reads unambiguously.
+			if got.Hour() != 0 || got.Minute() != 0 || got.Second() != 0 || got.Nanosecond() != 0 {
+				t.Error(tserr.EqualStr(&tserr.EqualStrArgs{
+					Var:    "clock",
+					Want:   "00:00:00.000000000",
+					Actual: got.Format("15:04:05.000000000"),
+				}))
+			}
+		})
+	}
+}
+
+// TestParseICSDateErr tests the parseICSDate function.
+// It checks that malformed date-only values return an error rather than
+// being silently coerced into a plausible date.
+func TestParseICSDateErr(t *testing.T) {
+	// Define a set of malformed inputs. Note the datetime-shaped entry:
+	// a full DATE-TIME value must NOT be accepted by the date-only parser,
+	// otherwise DTSTART;VALUE=DATE:20250301T120000 would parse instead of
+	// erroring.
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{name: "not a date", input: "notadate"},
+		{name: "empty string", input: ""},
+		{name: "too short", input: "2025030"},
+		{name: "too long", input: "202503011"},
+		{name: "invalid month", input: "20251301"},
+		{name: "invalid day", input: "20250132"},
+		{name: "non-leap Feb 29", input: "20250229"},
+		{name: "datetime value rejected", input: "20250301T120000"},
+		{name: "zulu datetime value rejected", input: "20250301T120000Z"},
+	}
+	// Loop through the tests and verify that each one returns an error.
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Parse the date-only value; an error is expected.
+			_, err := tsicsparser.ParseICSDate(tt.input)
+			// Verify that an error is returned for the invalid input.
+			if err == nil {
+				t.Error(tserr.NilFailed(tt.name))
+			}
+		})
+	}
+}
+
+// TestParseEventAllDay tests the VALUE=DATE handling in parseEvent:
+// the date parses to midnight UTC, AllDay is set, and — with no DTEND
+// or DURATION — End defaults to Start + 24h per RFC 5545 §3.6.1.
+func TestParseEventAllDay(t *testing.T) {
+	// A VEVENT with VALUE=DATE should parse to a midnight UTC start
+	// time, and AllDay should be set.
+	input := "BEGIN:VEVENT\nDTSTART;VALUE=DATE:20250301\nSUMMARY:All day\nEND:VEVENT"
+	// Create a new ICSScanner with the test input string.
+	s := tsicsparser.NewICSScanner(strings.NewReader(input), "test")
+	// Consume the BEGIN:VEVENT line, mirroring how the calendar
+	// parser hands the scanner to parseEvent after spotting BEGIN.
+	s.Scan() // consume BEGIN:VEVENT, mirroring parseCalendar
+	// Call ParseEvent and verify that an error is returned.
+	ev, err := tsicsparser.ParseEvent(s, nil)
+	// If there is an error parsing the event, we report it and stop the test.
+	if err != nil {
+		t.Fatal(tserr.Op(&tserr.OpArgs{Op: "ParseEvent", Err: err}))
+	}
+	// Expected start is midnight UTC on March 1st.
+	wantStart := time.Date(2025, time.March, 1, 0, 0, 0, 0, time.UTC)
+	// If event start does not match expected, report the mismatch.
+	if !ev.Start.Equal(wantStart) {
+		t.Error(tserr.EqualStr(&tserr.EqualStrArgs{
+			Var: "start", Want: wantStart.Format(time.RFC3339), Actual: ev.Start.Format(time.RFC3339)}))
+	}
+	// If AllDay is not set, report the mismatch.
+	if !ev.AllDay {
+		t.Error(tserr.EqualStr(&tserr.EqualStrArgs{Var: "AllDay", Want: "true", Actual: "false"}))
+	}
+	// Expected end is start + 24h.
+	wantEnd := wantStart.AddDate(0, 0, 1)
+	// If event end does not match expected, report the mismatch.
+	if !ev.End.Equal(wantEnd) {
+		t.Error(tserr.EqualStr(&tserr.EqualStrArgs{
+			Var: "end (+24h default)", Want: wantEnd.Format(time.RFC3339), Actual: ev.End.Format(time.RFC3339)}))
+	}
+}
+
+// TestParseEventAllDayDTEND tests a VALUE=DATE DTSTART paired with a
+// matching VALUE=DATE DTEND: the types match, so no error, and End is
+// the exclusive end date — the +24h default is NOT applied because
+// DTEND was given explicitly.
+func TestParseEventAllDayDTEND(t *testing.T) {
+	// A VEVENT with VALUE=DATE should parse to a midnight UTC start
+	// time, and AllDay should be set.
+	input := "BEGIN:VEVENT\nDTSTART;VALUE=DATE:20250301\nDTEND;VALUE=DATE:20250302\nEND:VEVENT"
+	// Create a new ICSScanner with the test input string.
+	s := tsicsparser.NewICSScanner(strings.NewReader(input), "test")
+	// Consume the BEGIN:VEVENT line, mirroring how the calendar
+	// parser hands the scanner to parseEvent after spotting BEGIN.
+	s.Scan()
+	// Call ParseEvent and verify that an error is returned.
+	ev, err := tsicsparser.ParseEvent(s, nil)
+	// If there is an error parsing the event, we report it and stop the test.
+	if err != nil {
+		t.Fatal(tserr.Op(&tserr.OpArgs{Op: "ParseEvent", Err: err}))
+	}
+	// Expected start is midnight UTC on March 1st.
+	wantStart := time.Date(2025, time.March, 1, 0, 0, 0, 0, time.UTC)
+	// Expected end is midnight UTC on March 2nd.
+	wantEnd := time.Date(2025, time.March, 2, 0, 0, 0, 0, time.UTC)
+	// If event start does not match expected, report the mismatch.
+	if !ev.Start.Equal(wantStart) {
+		t.Error(tserr.EqualStr(&tserr.EqualStrArgs{Var: "start", Want: wantStart.Format(time.RFC3339), Actual: ev.Start.Format(time.RFC3339)}))
+	}
+	// If event end does not match expected, report the mismatch.
+	if !ev.End.Equal(wantEnd) {
+		t.Error(tserr.EqualStr(&tserr.EqualStrArgs{Var: "end", Want: wantEnd.Format(time.RFC3339), Actual: ev.End.Format(time.RFC3339)}))
+	}
+	// If event all-day flag does not match expected, report the mismatch.
+	if !ev.AllDay {
+		t.Error(tserr.EqualStr(&tserr.EqualStrArgs{Var: "allday", Want: "true", Actual: "false"}))
+	}
+}
+
+// TestParseEventAllDayDuration tests day-aligned DURATIONs with a DATE
+// DTSTART: P1D and P2W are valid per RFC 5545 §3.8.2.5, in both the
+// DURATION-after-DTSTART and pending-DURATION-before-DTSTART orders.
+func TestParseEventAllDayDuration(t *testing.T) {
+	// Define a set of test cases
+	tests := []struct {
+		name  string
+		input string
+		want  time.Time
+	}{
+		{
+			name:  "P1D after DTSTART",
+			input: "BEGIN:VEVENT\nDTSTART;VALUE=DATE:20250301\nDURATION:P1D\nEND:VEVENT",
+			want:  time.Date(2025, time.March, 2, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			name:  "P2W after DTSTART",
+			input: "BEGIN:VEVENT\nDTSTART;VALUE=DATE:20250301\nDURATION:P2W\nEND:VEVENT",
+			want:  time.Date(2025, time.March, 15, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			name:  "P1D before DTSTART (pending)",
+			input: "BEGIN:VEVENT\nDURATION:P1D\nDTSTART;VALUE=DATE:20250301\nEND:VEVENT",
+			want:  time.Date(2025, time.March, 2, 0, 0, 0, 0, time.UTC),
+		},
+	}
+	// Iterate over each test case and run it as a subtest.
+	for _, tt := range tests {
+		// Run each test case as a subtest to isolate failures and provide better reporting.
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a new ICSScanner with the test input string.
+			s := tsicsparser.NewICSScanner(strings.NewReader(tt.input), "test")
+			// Consume the BEGIN:VEVENT line, mirroring how the calendar
+			// parser hands the scanner to parseEvent after spotting BEGIN.
+			s.Scan()
+			// Call ParseEvent and verify that an error is returned.
+			ev, err := tsicsparser.ParseEvent(s, nil)
+			// Report an error if there was an issue parsing the event.
+			if err != nil {
+				t.Fatal(tserr.Op(&tserr.OpArgs{Op: "ParseEvent", Fn: tt.name, Err: err}))
+			}
+			// Report an error if the actual end time does not match the expected time.
+			if !ev.End.Equal(tt.want) {
+				t.Error(tserr.EqualStr(&tserr.EqualStrArgs{
+					Var: "end", Want: tt.want.Format(time.RFC3339), Actual: ev.End.Format(time.RFC3339)}))
+			}
+		})
 	}
 }

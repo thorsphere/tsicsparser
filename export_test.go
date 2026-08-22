@@ -19,6 +19,7 @@ var (
 	ParseCalendar       = parseCalendar
 	CollectRawBlock     = collectRawBlock
 	ParseBufferedEvents = parseBufferedEvents
+	ParseICSDate        = parseICSDate
 )
 
 func (s *ICSScanner) ExportReadLine() (string, bool) {
