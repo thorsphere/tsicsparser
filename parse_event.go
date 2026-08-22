@@ -368,6 +368,9 @@ func validateRRule(s string) error {
 	// TODO: validate BYYEARDAY
 	// TODO: validate BYWEEKNO
 	// TODO: validate BYMONTH
+	// TODO: RFC 5545 §3.3.10 allows UNTIL to be a date-only value (UNTIL=20250401)
+	// when DTSTART is a date — but parseICSDateTime only accepts datetime layouts,
+	// so a date-only UNTIL is rejected here.
 	// Return nil if all checks pass to indicate a valid RRULE.
 	return nil
 }

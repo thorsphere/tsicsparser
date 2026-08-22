@@ -378,7 +378,6 @@ func TestParseEventErr(t *testing.T) {
 			name:  "DTSTART already set",
 			input: "BEGIN:VEVENT\nDTSTART:20250101T120000Z\nDTSTART:20250102T120000Z\nEND:VEVENT",
 		},
-
 		// --- DTEND duplicate ---
 		{
 			name:  "DTEND already set; duplicate DTEND",
@@ -404,7 +403,6 @@ func TestParseEventErr(t *testing.T) {
 			name:  "DTEND and DURATION mutually exclusive (pending DURATION then DTEND)",
 			input: "BEGIN:VEVENT\nDURATION:PT1H\nDTEND:20250101T130000Z\nEND:VEVENT",
 		},
-
 		// --- DURATION duplicate ---
 		{
 			// Two DURATIONs before DTSTART: the first is pending (End still
@@ -413,7 +411,6 @@ func TestParseEventErr(t *testing.T) {
 			name:  "DURATION already set",
 			input: "BEGIN:VEVENT\nDURATION:PT1H\nDURATION:PT2H\nEND:VEVENT",
 		},
-
 		// --- parseDTValue errors ---
 		{
 			name:  "invalid DTSTART datetime",
@@ -433,19 +430,16 @@ func TestParseEventErr(t *testing.T) {
 			name:  "TZID mismatch",
 			input: "BEGIN:VEVENT\nDTSTART;TZID=Europe/London:20250101T120000\nEND:VEVENT",
 		},
-
 		// --- parseDuration error ---
 		{
 			name:  "invalid DURATION",
 			input: "BEGIN:VEVENT\nDTSTART:20250101T120000Z\nDURATION:bad\nEND:VEVENT",
 		},
-
 		// --- unexpected END inside VEVENT ---
 		{
 			name:  "unexpected END inside VEVENT",
 			input: "BEGIN:VEVENT\nDTSTART:20250101T120000Z\nEND:VALARM\nEND:VEVENT",
 		},
-
 		// --- END:VEVENT validation errors ---
 		{
 			// No DTSTART, no DTEND, no DURATION.
@@ -462,11 +456,66 @@ func TestParseEventErr(t *testing.T) {
 			name:  "DURATION present without DTSTART",
 			input: "BEGIN:VEVENT\nDURATION:PT1H\nEND:VEVENT",
 		},
-
 		// --- EOF before END:VEVENT ---
 		{
 			name:  "missing END:VEVENT",
 			input: "BEGIN:VEVENT\nDTSTART:20250101T120000Z",
+		},
+		// --- validateRRule errors ---
+		{
+			// An RRULE part without "=" cannot be split into key/value,
+			// so validateRRule returns "invalid RRULE part: NOEQUALS"
+			// via its len(kv) != 2 branch, which parseEvent propagates
+			// from its case "RRULE" arm.
+			name:  "invalid RRULE part without equals",
+			input: "BEGIN:VEVENT\nDTSTART:20250101T120000Z\nRRULE:FREQ=WEEKLY;NOEQUALS\nEND:VEVENT",
+		},
+		{
+			// The RRULE's FREQ value is not one of the seven defined
+			// values (SECONDLY, MINUTELY, HOURLY, DAILY, WEEKLY, MONTHLY,
+			// YEARLY), so validateRRule returns "invalid RRULE FREQ
+			// value: FORTNIGHTLY" via its default arm, which parseEvent
+			// propagates from its case "RRULE" arm.
+			name:  "invalid RRULE FREQ value",
+			input: "BEGIN:VEVENT\nDTSTART:20250101T120000Z\nRRULE:FREQ=FORTNIGHTLY\nEND:VEVENT",
+		},
+		{
+			// RFC 5545 §3.1 rule names are case-sensitive; lowercase
+			// "weekly" is not a valid FREQ value.
+			name:  "invalid RRULE FREQ value lowercase",
+			input: "BEGIN:VEVENT\nDTSTART:20250101T120000Z\nRRULE:FREQ=weekly\nEND:VEVENT",
+		},
+		{
+			// The RRULE's UNTIL value is not a valid ICS datetime, so
+			// validateRRule returns "invalid RRULE UNTIL value: notadate"
+			// via its parseICSDateTime error branch, which parseEvent
+			// propagates from its case "RRULE" arm.
+			name:  "invalid RRULE UNTIL value",
+			input: "BEGIN:VEVENT\nDTSTART:20250101T120000Z\nRRULE:FREQ=WEEKLY;UNTIL=notadate\nEND:VEVENT",
+		},
+		{
+			// The RRULE has no FREQ part at all. Every part parses cleanly
+			// (COUNT=10 is valid), so the loop completes without error and
+			// the post-loop check fires: "RRULE missing required FREQ".
+			name:  "RRULE missing required FREQ",
+			input: "BEGIN:VEVENT\nDTSTART:20250101T120000Z\nRRULE:COUNT=10\nEND:VEVENT",
+		},
+		{
+			// Both UNTIL and COUNT are present. Each part is individually
+			// valid (FREQ=WEEKLY is a defined value, the UNTIL datetime
+			// parses), so the loop completes and the post-loop mutual-
+			// exclusivity check fires: "RRULE must not contain both UNTIL
+			// and COUNT" (RFC 5545 §3.3.10).
+			name: "RRULE with both UNTIL and COUNT",
+			input: "BEGIN:VEVENT\nDTSTART:20250101T120000Z\n" +
+				"RRULE:FREQ=WEEKLY;UNTIL=20250401T000000Z;COUNT=10\nEND:VEVENT",
+		},
+		{
+			// An RRULE property with an empty value: splitKeyValue yields
+			// Value "", which validateRRule rejects via its empty-string
+			// guard before the loop is ever entered.
+			name:  "empty RRULE",
+			input: "BEGIN:VEVENT\nDTSTART:20250101T120000Z\nRRULE:\nEND:VEVENT",
 		},
 	}
 
