@@ -5,10 +5,10 @@ package tsicsparser
 
 // Import necessary packages for testing the tsicsparser package.
 import (
-	"fmt" // Import the fmt package to work with string formatting functions.
+	"fmt"     // Import the fmt package to work with string formatting functions.
 	"strings" // Import the strings package to work with string manipulation functions.
 
-	"github.com/thorsphere/tserr" // Import the tserr package to handle error reporting and formatting in the tests.
+	"github.com/thorsphere/tserr"   // Import the tserr package to handle error reporting and formatting in the tests.
 	"github.com/thorsphere/tstable" // Import the tstable package to work with tables in the tests.
 )
 
@@ -352,22 +352,6 @@ func parseProdID(value string) (ProdId, error) {
 		Product:      parts[2],
 		Language:     parts[3],
 	}, nil
-}
-
-// splitKeyValue splits a line into a key-value pair based on the first colon.
-func splitKeyValue(line string) (*keyValue, error) {
-	// Split the line into key-value pairs based on the first colon.
-	parts := strings.SplitN(line, ":", 2)
-	// If the line does not contain a colon, return an error indicating invalid format.
-	if len(parts) != 2 {
-		return nil, tserr.InvalidFormat(line)
-	}
-	// Extract the key and value from the split parts.
-	key := parts[0]
-	// The value is the part after the colon.
-	value := parts[1]
-	// Return a new keyValue struct containing the extracted key and value.
-	return &keyValue{Key: key, Value: value}, nil
 }
 
 // String returns a formatted table representation of the product identifier.
