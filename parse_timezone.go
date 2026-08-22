@@ -14,13 +14,6 @@ import (
 	"github.com/thorsphere/tstable" // For creating and formatting tables for output
 )
 
-// RRule represents a recurrence rule for timezone transitions.
-type RRule struct {
-	Freq    string // e.g., "YEARLY"
-	ByMonth int    // 1-12
-	ByDay   string // e.g., "1SU", "-1SU"
-}
-
 // RuleType distinguishes between standard and daylight saving rules.
 type RuleType int
 
@@ -59,27 +52,27 @@ type Timezones []Timezone
 // It returns a tserr.NotFound error if the TZID is not found.
 func (tzs Timezones) Lookup(tzid string) (Timezone, error) {
 	// Iterate through the list of Timezones to find a matching TZID.
-    for i := range tzs {
+	for i := range tzs {
 		// Check if the TZID of the current Timezone matches the requested tzid.
-        if tzs[i].TZID == tzid {
+		if tzs[i].TZID == tzid {
 			// If a matching TZID is found, return the corresponding Timezone and a nil error.
-            return tzs[i], nil
-        }
-    }
+			return tzs[i], nil
+		}
+	}
 	// If no matching TZID is found, return a tserr.NotFound error with a descriptive message.
-    return Timezone{}, tserr.NotFound(fmt.Sprintf("timezone not found: %s", tzid))
+	return Timezone{}, tserr.NotFound(fmt.Sprintf("timezone not found: %s", tzid))
 }
 
 // String renders every VTIMEZONE in declaration order.
 func (tzs Timezones) String() string {
 	// Use a strings.Builder to efficiently build the output string.
-    var sb strings.Builder
-    // Iterate through the list of Timezones and append their string representations to the builder.
+	var sb strings.Builder
+	// Iterate through the list of Timezones and append their string representations to the builder.
 	for i := range tzs {
 		// Append the string representation of the current Timezone to the builder.
-        sb.WriteString(tzs[i].String())
-    }
-    // Return the concatenated string representation of all Timezones.
+		sb.WriteString(tzs[i].String())
+	}
+	// Return the concatenated string representation of all Timezones.
 	return sb.String()
 }
 
@@ -295,50 +288,6 @@ func parseOffset(s string) (int, error) {
 	// Calculate the total offset in seconds by converting hours and minutes to seconds,
 	// applying the sign, and returning the result.
 	return sign * (hours*3600 + minutes*60), nil
-}
-
-// parseRRule parses an RRULE value like "FREQ=YEARLY;BYMONTH=3;BYDAY=2SU".
-func parseRRule(s string) (*RRule, error) {
-	// Return an error if the RRULE string is empty, as it cannot be parsed.
-	if s == "" {
-		return nil, tserr.InvalidFormat("empty RRULE")
-	}
-	// Initialize an empty RRule struct to hold the parsed values.
-	var rrule RRule
-	// Split the RRULE string by semicolons to separate each key-value pair.
-	// Iterate over each part of the RRULE string.
-	for part := range strings.SplitSeq(s, ";") {
-		// Split each part by the first "=" to separate the key and value.
-		kv := strings.SplitN(part, "=", 2)
-		// If the split does not result in exactly two parts (key and value),
-		// return an error indicating invalid format.
-		if len(kv) != 2 {
-			return nil, tserr.InvalidFormat(fmt.Sprintf("invalid RRULE part: %s", part))
-		}
-		// Use a switch statement to handle different keys in the RRULE.
-		switch kv[0] {
-		// If the key is "FREQ", assign the value to the Freq field of the RRule struct.
-		case "FREQ":
-			rrule.Freq = kv[1]
-		// If the key is "BYMONTH", convert the value to an integer and
-		// assign it to the ByMonth field.
-		case "BYMONTH":
-			// Convert the value to an integer representing the month (1-12).
-			month, err := strconv.Atoi(kv[1])
-			// If there is an error converting the value to an integer,
-			// return an error indicating invalid format.
-			if err != nil {
-				return nil, tserr.InvalidFormat(fmt.Sprintf("invalid RRULE part: %s", part))
-			}
-			// Assign the parsed month value to the ByMonth field of the RRule struct.
-			rrule.ByMonth = month
-		// If the key is "BYDAY", assign the value to the ByDay field of the RRule struct.
-		case "BYDAY":
-			rrule.ByDay = kv[1]
-		}
-	}
-	// Return the parsed RRule struct and a nil error, indicating successful parsing.
-	return &rrule, nil
 }
 
 // parseICSDateTime parses an ICS datetime string in the form "20070311T020000" or "20070311T020000Z"
